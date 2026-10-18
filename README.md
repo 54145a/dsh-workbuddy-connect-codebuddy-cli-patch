@@ -13,7 +13,7 @@
 ## 安装
 
 ```sh
-# Web profile（内核 0.2.1-rc.2 → 本包 0.7.8）
+# Web profile（内核 0.2.1-rc.2 → 本包 0.7.8-cli.1）
 dsh plugin --profile web add @54145a/dsh-workbuddy-connect
 dsh web
 
@@ -99,28 +99,47 @@ pnpm check                       # 重建 lib/ 并验证
 
 ## 发布（维护者）
 
-打 tag 即触发 `.github/workflows/release.yml`：
+### 版本号规则
+
+版本号 = **上游基线 + `-cli.N`**，这样上游发新版时映射关系一目了然：
+
+| 上游 | 本包 |
+|---|---|
+| 0.7.8 | `0.7.8-cli.1`、`0.7.8-cli.2`… |
+| 0.7.9 | `0.7.9-cli.1`… |
+
+`-cli.1` 是合法的 semver **prerelease**，排序低于 `0.7.8`：
+
+```
+0.7.8-cli.1 < 0.7.8-cli.2 < 0.7.8 < 0.7.9-cli.1 < 0.7.9
+```
+
+**不要**用 `0.7.8+cli.1`：semver 把它当 build metadata，视为**等于** `0.7.8`，无法区分两个包。
+
+### 发布步骤
 
 ```sh
-# 1. 先 bump 版本并重建
-npm version 0.7.9 --no-git-tag-version   # 或手动改 package.json
+# 1. bump 版本并重建（用 pnpm，避免 pkg set 重排 devDependencies）
+sed -i 's/^  "version": ".*",$/  "version": "0.7.8-cli.2",/' package.json
 pnpm check                               # typecheck + 测试 + 构建，重建 lib/
-git commit -am "chore: release 0.7.9"
+git commit -am "chore: release 0.7.8-cli.2"
 git push
 
 # 2. 打 tag 并推送 —— 这一步触发发布
-git tag v0.7.9
-git push origin v0.7.9
+git tag v0.7.8-cli.2
+git push origin v0.7.8-cli.2
 ```
 
-workflow 会在 `v*` tag 上：安装依赖 → 跑 `pnpm check` → `pnpm publish --access public --provenance`（用仓库 secret `NPM_TOKEN`）。
+workflow 会在 `v*` tag 上：安装依赖 → 跑 `pnpm check` → 校验 tag 与 `package.json` 一致 → `pnpm publish --access public --provenance --no-git-checks --tag latest`（用仓库 secret `NPM_TOKEN`）。
 
-全程只用 pnpm，不混用 npm。这里有个**必须 pin pnpm 12** 的理由，不是随手选的版本：
+### 几个必须显式处理的点
 
-- `--provenance` 需要 pnpm **≥ 12**（pnpm 10/11 的 `publish` 没有该参数）。上游 `diagnostics.yml` pin 的是 pnpm 10 —— 那是"跑测试"的版本，不能照抄来发布。
-- pnpm **拒绝**从**项目级** `.npmrc` 展开 `${NODE_AUTH_TOKEN}`（安全策略：仓库可控的文件不得读取凭据）。所以认证依赖 `actions/setup-node` 把 `.npmrc` 写到 `$RUNNER_TEMP`（仓库之外）并导出 `NPM_CONFIG_USERCONFIG`，pnpm 才会按用户级配置展开。
-- workflow 显式设 `NPM_CONFIG_REGISTRY=https://registry.npmjs.org/`：发布是唯一"落错 registry 不是性能问题"的操作。
-- `--no-git-checks` 是**必需**而非走捷径：`actions/checkout` 在 tag 上是 detached HEAD，而 pnpm 默认的 `publish-branch` 检查（`master|main`）要求已附加到分支，否则报 `ERR_PNPM_GIT_UNKNOWN_BRANCH`。工作树是否干净已由前面的 `pnpm check` 保证。
+- **`--tag latest` 必须显式写**。因为版本是 prerelease，而两个工具的默认行为**不一致**：npm **强制要求** `--tag`（报 `You must specify a tag using --tag`），pnpm 却**静默放行**。依赖 pnpm 的默认行为等于让 dist-tag 取决于未文档化的实现细节。选 `latest` 是为了让 `dsh plugin add @54145a/dsh-workbuddy-connect` 裸装直接命中。
+- **注意 semver 范围不匹配 prerelease**：`^0.7.8` / `>=0.7.8` **不会**匹配 `0.7.8-cli.1`。所以安装必须**不带版本**或**写精确版本**，不能写范围。
+- **必须 pin pnpm 12**：`--provenance` 需要 pnpm ≥ 12（pnpm 10/11 的 `publish` 没有该参数）。上游 `diagnostics.yml` pin 的 pnpm 10 是"跑测试"的版本，不能照抄来发布。
+- **认证路径**：pnpm **拒绝**从**项目级** `.npmrc` 展开 `${NODE_AUTH_TOKEN}`（仓库可控的文件不得读取凭据），所以依赖 `actions/setup-node` 把 `.npmrc` 写到 `$RUNNER_TEMP`（仓库之外）并导出 `NPM_CONFIG_USERCONFIG`。
+- **`NPM_CONFIG_REGISTRY` 显式设置**：发布是唯一"落错 registry 不是性能问题"的操作。
+- **`--no-git-checks` 是必需而非走捷径**：`actions/checkout` 在 tag 上是 detached HEAD，pnpm 默认的 `publish-branch` 检查（`master|main`）要求已附加到分支，否则报 `ERR_PNPM_GIT_UNKNOWN_BRANCH`。工作树是否干净已由前面的 `pnpm check` 保证。
 
 **前置配置（一次性）**：在 GitHub 仓库 Settings → Secrets and variables → Actions 添加 `NPM_TOKEN`，值为 npm **Automation** 类型的 token（该类型绕过 OTP，适合 CI）。token 需有 `@54145a` scope 的发布权。
 

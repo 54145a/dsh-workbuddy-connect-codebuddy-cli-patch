@@ -83,7 +83,16 @@ jobs:
       # (master|main) needs an attached branch name, so the publish would fail
       # with ERR_PNPM_GIT_UNKNOWN_BRANCH. Working-tree cleanliness is already
       # enforced by the check step above, which leaves the tree clean.
+      #
+      # --tag latest is explicit because this version is a semver PRERELEASE
+      # (0.7.8-cli.N) and the two tools disagree about what that implies: npm
+      # refuses to publish a prerelease without --tag, while pnpm publishes it
+      # silently. Leaving it to pnpm's default would make the dist-tag depend on
+      # undocumented behaviour. `latest` is the deliberate choice so a plain
+      # `dsh plugin add @54145a/dsh-workbuddy-connect` resolves to this build —
+      # note a semver RANGE like ^0.7.8 does NOT match a prerelease, so installs
+      # must be untagged or exact.
       - name: publish
-        run: pnpm publish --access public --provenance --no-git-checks
+        run: pnpm publish --access public --provenance --no-git-checks --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

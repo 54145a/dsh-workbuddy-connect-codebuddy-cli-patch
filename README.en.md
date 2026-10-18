@@ -21,7 +21,7 @@ logged in.
 ## Install
 
 ```sh
-# Web profile (core 0.2.1-rc.2 -> this package 0.7.8)
+# Web profile (core 0.2.1-rc.2 -> this package 0.7.8-cli.1)
 dsh plugin --profile web add @54145a/dsh-workbuddy-connect
 dsh web
 
@@ -150,39 +150,66 @@ Two caveats worth knowing:
 
 ## Releasing (maintainer)
 
-Pushing a tag triggers `.github/workflows/release.yml`:
+### Version scheme
+
+The version is **upstream baseline + `-cli.N`**, so the mapping stays obvious
+when upstream ships a new release:
+
+| Upstream | This package |
+|---|---|
+| 0.7.8 | `0.7.8-cli.1`, `0.7.8-cli.2`, … |
+| 0.7.9 | `0.7.9-cli.1`, … |
+
+`-cli.1` is a valid semver **prerelease**, which sorts below `0.7.8`:
+
+```
+0.7.8-cli.1 < 0.7.8-cli.2 < 0.7.8 < 0.7.9-cli.1 < 0.7.9
+```
+
+Do **not** use `0.7.8+cli.1`: semver treats that as build metadata, so it is
+*equal* to `0.7.8` and cannot distinguish the two packages.
+
+### Steps
 
 ```sh
-# 1. Bump the version and rebuild first
-npm version 0.7.9 --no-git-tag-version   # or edit package.json by hand
+# 1. Bump the version and rebuild (edit by hand; `pnpm pkg set` reorders devDependencies)
+sed -i 's/^  "version": ".*",$/  "version": "0.7.8-cli.2",/' package.json
 pnpm check                               # typecheck + tests + build, regenerates lib/
-git commit -am "chore: release 0.7.9"
+git commit -am "chore: release 0.7.8-cli.2"
 git push
 
 # 2. Tag and push — this is what triggers the publish
-git tag v0.7.9
-git push origin v0.7.9
+git tag v0.7.8-cli.2
+git push origin v0.7.8-cli.2
 ```
 
-On a `v*` tag the workflow installs dependencies, runs `pnpm check`, then
-`pnpm publish --access public --provenance` using the repository secret
-`NPM_TOKEN`.
+On a `v*` tag the workflow installs dependencies, runs `pnpm check`, verifies the
+tag against `package.json`, then runs
+`pnpm publish --access public --provenance --no-git-checks --tag latest` using
+the repository secret `NPM_TOKEN`.
 
-The whole release runs through pnpm — npm is never mixed in. Pinning pnpm **12**
-is load-bearing rather than incidental:
+### Points that must be explicit
 
-- `--provenance` needs pnpm **>= 12** (pnpm 10/11's `publish` has no such flag).
-  Upstream's `diagnostics.yml` pins pnpm 10 — that is a *testing* version and
-  must not be copied for publishing.
-- pnpm **refuses** to expand `${NODE_AUTH_TOKEN}` from a *project*-level
-  `.npmrc`, because a repository-controlled file must not be able to read
-  credentials. Registry auth therefore depends on `actions/setup-node` writing
-  its `.npmrc` to `$RUNNER_TEMP` (outside the repo) and exporting
+- **`--tag latest` must be spelled out.** The version is a prerelease and the two
+  tools disagree on what that implies: npm **refuses** to publish one without
+  `--tag` (`You must specify a tag using --tag`), while pnpm publishes it
+  silently. Leaving it to pnpm's default would make the dist-tag depend on
+  undocumented behaviour. `latest` is deliberate so a plain
+  `dsh plugin add @54145a/dsh-workbuddy-connect` resolves to this build.
+- **A semver RANGE will not match a prerelease**: `^0.7.8` and `>=0.7.8` both fail
+  against `0.7.8-cli.1`. Installs must therefore be untagged or exact, never a
+  range.
+- **pnpm 12 is required**: `--provenance` needs pnpm >= 12 (pnpm 10/11's `publish`
+  has no such flag). Upstream's `diagnostics.yml` pins pnpm 10 — that is a
+  *testing* version and must not be copied for publishing.
+- **Registry auth**: pnpm **refuses** to expand `${NODE_AUTH_TOKEN}` from a
+  *project*-level `.npmrc`, because a repository-controlled file must not be able
+  to read credentials. Auth therefore depends on `actions/setup-node` writing its
+  `.npmrc` to `$RUNNER_TEMP` (outside the repo) and exporting
   `NPM_CONFIG_USERCONFIG`, which pnpm treats as user-level.
-- The workflow sets `NPM_CONFIG_REGISTRY=https://registry.npmjs.org/`
-  explicitly: publishing is the one operation where silently landing on a
-  configured mirror is not a performance question.
-- `--no-git-checks` is **required**, not a shortcut: `actions/checkout` leaves a
+- **`NPM_CONFIG_REGISTRY` is set explicitly**: publishing is the one operation
+  where silently landing on a configured mirror is not a performance question.
+- **`--no-git-checks` is required**, not a shortcut: `actions/checkout` leaves a
   detached HEAD on a tag, and pnpm's default `publish-branch` check
   (`master|main`) needs an attached branch name, so the publish would fail with
   `ERR_PNPM_GIT_UNKNOWN_BRANCH`. Working-tree cleanliness is already enforced by
