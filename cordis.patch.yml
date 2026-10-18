@@ -1,6 +1,13 @@
 # Register the WorkBuddy provider without changing the profile's current
-# default model. The plugin reuses the WorkBuddy desktop app's sign-in; no
-# separate OAuth flow is started.
+# default model. The plugin reuses the WorkBuddy desktop app's sign-in — or the
+# CodeBuddy CLI's, when no desktop app is signed in; no separate OAuth flow is
+# started.
+#
+# `name` must match this package's name in package.json: the loader resolves it
+# as a module from the profile directory. The patch-entry id stays
+# `llm-workbuddy` regardless, and the HTTP routes under
+# `/plugins/dsh-workbuddy-connect/...` are hard-coded literals, so a scoped
+# package name changes neither.
 - insert:
     - id: llm-workbuddy
-      name: dsh-workbuddy-connect
+      name: "@54145a/dsh-workbuddy-connect"
