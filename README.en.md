@@ -95,16 +95,58 @@ Against upstream v0.7.8:
 |---|---|
 | `src/auth.ts` | Core: `CLI_AUTH_FILENAME` constant, CLI file appended to the candidate list, `readDesktop()` split into the upstream desktop probe (verbatim) plus a region-filtered CLI segment |
 | `src/bin.ts` | Copy only: doctor hints mention the CLI |
-| `src/client/locales.ts` | Copy only: `intro` / `signedOutHint`, 4 keys × EN/ZH, mention the CLI |
+| `src/client/index.tsx` | Copy only: overrides the four `intro` / `signedOutHint` keys at `locale.register`; `locales.ts` is left untouched |
 | `package.json` | Renamed to `@54145a/dsh-workbuddy-connect`; author/repository point at this fork |
 | `cordis.patch.yml` | The patch entry's `name` follows the package name, now scoped |
-| `tests/*.spec.ts` | Two assertions invalidated by the candidate append rewritten; CLI fallback cases added |
+| `tests/*.spec.ts` | Two assertions invalidated by the candidate append rewritten; CLI fallback and copy-override cases added |
 | `.github/workflows/release.yml` | Added: publishes to npm on a tag push |
+| `.gitattributes` | Declares both READMEs as `merge=ours` when syncing upstream |
 
-**Unchanged**: `upstream.ts`, `variants.ts`, `status-paths.ts`,
+**Unchanged**: `src/client/locales.ts` (byte-identical to upstream),
+`upstream.ts`, `variants.ts`, `status-paths.ts`,
 `desktop-credential-protection.ts`, `catalog.ts`, `web-status.ts`. The routes
 under `/plugins/dsh-workbuddy-connect/...` are hard-coded literals unrelated to
 the package name, so scoping does not affect them.
+
+## Syncing upstream
+
+The changes here are deliberately concentrated in files upstream rarely touches.
+Measured on a simulated release, a sync needs **one manual merge** — `package.json`:
+
+```sh
+git remote add upstream https://github.com/corrinehu/dsh-workbuddy-connect.git
+git fetch upstream --tags
+git merge upstream/main          # or a specific tag
+# merge package.json by hand (version + @deepseek-ai peer range); the rest is automatic
+pnpm check                       # regenerates lib/ and verifies
+```
+
+Why only one:
+
+- **`src/auth.ts` is the only core file changed**, and recent upstream releases
+  have not touched it at all (v0.7.7 -> v0.7.8 changed it zero times).
+- **`locales.ts` is byte-identical to upstream** — the copy is overridden at the
+  registration site in `index.tsx`. Upstream rewrites those very keys often
+  (v0.7.8 changed `intro` and `signedOutHint`), so leaving the copy in
+  `locales.ts` would make every release a manual merge.
+- **Both READMEs are declared `merge=ours`** in `.gitattributes`: they were
+  rewritten as this fork's documentation, so upstream's edits are not merged.
+
+Two caveats worth knowing:
+
+1. **`merge=ours` needs a local git setting.** The driver is a built-in git
+   convention, but its definition lives in `.git/config` and **does not travel
+   with a clone**, so on a new machine run this once:
+   ```sh
+   git config merge.ours.driver true
+   ```
+   Without it git does not recognize the driver and the attribute **degrades to
+   an ordinary conflict** — a safe failure, nothing is silently lost.
+2. **`package.json` must never be added to `.gitattributes`.** Measured: with
+   `merge=ours` on it, a merge resolved with **zero conflicts** while upstream's
+   version and `@deepseek-ai` peer range were **silently discarded** (left at the
+   old values) — and that range is exactly what decides whether the plugin loads
+   on the next DSH core line. It stays a manual merge.
 
 ## Releasing (maintainer)
 

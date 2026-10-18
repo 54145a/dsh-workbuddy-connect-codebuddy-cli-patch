@@ -60,13 +60,42 @@ CodeBuddy CLI 与 WorkBuddy 桌面 App 把凭据写进**同一个目录**，只�
 |---|---|
 | `src/auth.ts` | 核心：`CLI_AUTH_FILENAME` 常量、候选列表追加 CLI 文件、`readDesktop()` 拆成「上游桌面段（逐字保留）+ 区域过滤的 CLI 段」 |
 | `src/bin.ts` | 仅文案：doctor 提示提及 CLI |
-| `src/client/locales.ts` | 仅文案：`intro` / `signedOutHint` 中英各 2 条提及 CLI |
+| `src/client/index.tsx` | 仅文案：在 `locale.register` 处覆盖 `intro` / `signedOutHint` 4 个键（中英各 4 条），**不改 `locales.ts`** |
 | `package.json` | 包名改为 `@54145a/dsh-workbuddy-connect`、作者/仓库指向本 fork |
 | `cordis.patch.yml` | patch 条目的 `name` 随包名改为带 scope 形式 |
-| `tests/*.spec.ts` | 改写 2 处受候选追加影响的断言，新增 CLI 兜底用例 |
+| `tests/*.spec.ts` | 改写 2 处受候选追加影响的断言，新增 CLI 兜底用例与文案覆盖用例 |
 | `.github/workflows/release.yml` | 新增：打 tag 触发发布到 npm |
+| `.gitattributes` | 同步上游时把两份 README 声明为 `merge=ours` |
 
-**未改动**：`upstream.ts`、`variants.ts`、`status-paths.ts`、`desktop-credential-protection.ts`、`catalog.ts`、`web-status.ts`。路由 `/plugins/dsh-workbuddy-connect/...` 是硬编码字面量，与包名无关，因此改 scope 不影响它。
+**未改动**：`src/client/locales.ts`（与上游逐字相同）、`upstream.ts`、`variants.ts`、`status-paths.ts`、`desktop-credential-protection.ts`、`catalog.ts`、`web-status.ts`。路由 `/plugins/dsh-workbuddy-connect/...` 是硬编码字面量，与包名无关，因此改 scope 不影响它。
+
+## 同步上游
+
+本 fork 已把改动收敛到「上游很少碰的文件」，实测同步一次上游发版只需**手动合并 1 个文件**（`package.json`）：
+
+```sh
+git remote add upstream https://github.com/corrinehu/dsh-workbuddy-connect.git
+git fetch upstream --tags
+git merge upstream/main          # 或 merge 具体 tag
+# 手动处理 package.json（版本 + @deepseek-ai peer 范围），其余自动
+pnpm check                       # 重建 lib/ 并验证
+```
+
+为什么只有 1 处：
+
+- **`src/auth.ts` 是唯一的核心改动文件**，而上游最近几个发版都没碰过它（v0.7.7→v0.7.8 完全未改）。
+- **`locales.ts` 与上游逐字相同** —— 文案改在 `index.tsx` 的注册处。上游恰恰频繁改这几个键（v0.7.8 就改了 `intro`/`signedOutHint`），把文案留在 `locales.ts` 会让每次发版都变成手动合并。
+- **两份 README 由 `.gitattributes` 声明为 `merge=ours`**：它们已被改写成本 fork 的说明，上游的改动不合并。
+
+两个必须知道的注意点：
+
+1. **`merge=ours` 需要本地 git 配置**。该 driver 是 git 内置惯例，但定义在 `.git/config` 里、**不随 clone 传递**。新机器上 clone 后要执行一次：
+   ```sh
+   git config merge.ours.driver true
+   ```
+   没有它时，git 不认识该 driver，会**退化成普通冲突**（安全失败，不会静默损坏）。
+2. **`package.json` 绝不能加进 `.gitattributes`**。实测：给它加 `merge=ours` 后合并**零冲突**，但上游的版本与 `@deepseek-ai` peer 范围被**静默丢弃**（仍停在旧值）—— 而这正是决定插件能否在下一版 DSH 内核上加载的东西。所以它必须手动合。
+
 
 ## 发布（维护者）
 
