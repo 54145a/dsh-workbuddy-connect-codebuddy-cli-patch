@@ -55,6 +55,10 @@ jobs:
           # repository-controlled file must not be able to read credentials.
           registry-url: https://registry.npmjs.org
 
+      # minimumReleaseAge is pinned in pnpm-workspace.yaml, not here: pnpm >= 11
+      # defaults it to 1440 minutes, and this workflow's pnpm 12 pin is what
+      # exposed that default. Without the repository-level value the install
+      # fails on the DSH 0.2.1-rc.2 packages, which are younger than a day.
       - name: install dependencies
         run: pnpm install --frozen-lockfile
 
