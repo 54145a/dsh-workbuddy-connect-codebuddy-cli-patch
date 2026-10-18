@@ -60,6 +60,30 @@ describe('package version sync', () => {
         .not.toMatch(/(?:from\s*|import\s*\(|require\s*\()\s*['"]@deepseek-ai\/dsh-atomic-write['"]/)
     }
   })
+
+  /**
+   * The browser bundle registers itself with `__ModuleLoader__.load({ id })`,
+   * and the host looks that id up by PACKAGE NAME: it builds the bundle URL as
+   * `/plugins/<package name>/client.js` and fails with "loaded without
+   * registering" when the two disagree.
+   *
+   * A rename that misses this — the package renamed to a scope while the build
+   * config kept the old bare id — reaches the user as a plugin page that cannot
+   * load its card, which nothing else here catches: the id is injected by the
+   * build config, and the slot specs pass a key of their own.
+   */
+  it('built client bundle registers under the package name', () => {
+    const bundle = new URL('../lib/client.js', import.meta.url)
+    if (!existsSync(bundle)) return
+    const pkg = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { name: string }
+    const source = readFileSync(bundle, 'utf8')
+    const id = /__ModuleLoader__\.load\(\{\s*id:\s*"([^"]+)"/.exec(source)?.[1]
+    expect(id, 'lib/client.js declares no __ModuleLoader__.load id — rebuild before this test')
+      .toBeDefined()
+    expect(id).toBe(pkg.name)
+  })
 })
 
 describe('peer manifest pins the verified DSH cores', () => {

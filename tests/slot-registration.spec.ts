@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SlotCore } from '@deepseek-ai/dsh-client-ui-slots'
+import { BUNDLE_NAME } from '../src/client/index.tsx'
 import { CARD_VARIANTS } from '../src/client/WorkBuddyPluginCard.tsx'
 
 /**
@@ -28,8 +29,12 @@ import { CARD_VARIANTS } from '../src/client/WorkBuddyPluginCard.tsx'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/** The key the bundle registers under; the 0.1.6+ page looks the entry up by name. */
-const BUNDLE_KEY = 'dsh-workbuddy-connect'
+/**
+ * The key the bundle registers under; the 0.1.6+ page looks the entry up by
+ * name. Derived from the bundle rather than restated, so a package rename cannot
+ * leave this spec asserting a key nothing registers under.
+ */
+const BUNDLE_KEY = BUNDLE_NAME
 
 /** Minimal component stand-in; the registry only stores the reference. */
 const Component = (): null => null

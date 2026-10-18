@@ -127,7 +127,7 @@ export const name = 'dsh-workbuddy-connect-client'
  * The Plugins page dispatches `plugins.bundle.config` by the bundle's package
  * name, so the key has to spell exactly what the profile installs.
  */
-export const BUNDLE_NAME = 'dsh-workbuddy-connect'
+export const BUNDLE_NAME = '@54145a/dsh-workbuddy-connect'
 
 /**
  * Client services required by this browser half.
