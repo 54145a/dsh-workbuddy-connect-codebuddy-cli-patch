@@ -135,9 +135,19 @@ describe('resolveAppVersion', () => {
 
   it('still answers when the cache cannot be written', async () => {
     // A read-only home must not take the catalog down with it.
+    //
+    // The blocker is a regular file rather than /proc: on Node 22
+    // `mkdir('/proc/...', { recursive: true })` never settles (the parent
+    // exists, yet mkdir reports ENOENT, so the retry loop spins until the test
+    // times out). A file in the way fails with ENOTDIR immediately on every
+    // supported Node.
+    const root = await mkdtemp(join(tmpdir(), 'wb-appversion-blocked-'))
+    CLEANUP.push(() => rm(root, { recursive: true, force: true }))
+    const blocker = join(root, 'blocker')
+    await writeFile(blocker, 'not a directory')
     await expect(resolveAppVersion({
       installed: async () => ({ version: '5.5.2', bundle: '/x' }),
-      path: '/proc/definitely-not-writable/version.json',
+      path: join(blocker, 'version.json'),
     })).resolves.toMatchObject({ version: '5.5.2', source: 'installed' })
   })
 
