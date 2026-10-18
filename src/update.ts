@@ -25,7 +25,7 @@
  * to "upgrade" — to the package without the CodeBuddy CLI support they
  * installed this fork for.
  */
-export const WORKBUDDY_REPOSITORY_URL = 'https://github.com/54145a/dsh-workbuddy-connect'
+export const WORKBUDDY_REPOSITORY_URL = 'https://github.com/54145a/dsh-workbuddy-connect-codebuddy-cli-patch'
 export const WORKBUDDY_UPDATE_PACKAGE_NAME = '@54145a/dsh-workbuddy-connect'
 export const WORKBUDDY_UPDATE_NPM_METADATA_URL = `https://registry.npmjs.org/-/package/${WORKBUDDY_UPDATE_PACKAGE_NAME}/dist-tags`
 export const WORKBUDDY_UPDATE_RELEASES_API_URL = `${WORKBUDDY_REPOSITORY_URL.replace('https://github.com', 'https://api.github.com/repos')}/releases?per_page=100`

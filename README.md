@@ -18,7 +18,7 @@ dsh plugin --profile web add @54145a/dsh-workbuddy-connect
 dsh web
 
 # 或直接从仓库源码安装
-dsh plugin --profile web add github:54145a/dsh-workbuddy-connect
+dsh plugin --profile web add github:54145a/dsh-workbuddy-connect-codebuddy-cli-patch
 ```
 
 登录一次即可 —— **桌面 App 或 CodeBuddy CLI 均可**：

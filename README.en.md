@@ -26,7 +26,7 @@ dsh plugin --profile web add @54145a/dsh-workbuddy-connect
 dsh web
 
 # Or straight from the repository
-dsh plugin --profile web add github:54145a/dsh-workbuddy-connect
+dsh plugin --profile web add github:54145a/dsh-workbuddy-connect-codebuddy-cli-patch
 ```
 
 Sign in once — **the desktop app or the CodeBuddy CLI both work**:

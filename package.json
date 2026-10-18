@@ -47,10 +47,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/54145a/dsh-workbuddy-connect.git"
+    "url": "git+https://github.com/54145a/dsh-workbuddy-connect-codebuddy-cli-patch.git"
   },
-  "homepage": "https://github.com/54145a/dsh-workbuddy-connect#readme",
-  "bugs": "https://github.com/54145a/dsh-workbuddy-connect/issues",
+  "homepage": "https://github.com/54145a/dsh-workbuddy-connect-codebuddy-cli-patch#readme",
+  "bugs": "https://github.com/54145a/dsh-workbuddy-connect-codebuddy-cli-patch/issues",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
