@@ -1027,6 +1027,12 @@ declare function defaultDesktopAuthCandidates(): string[];
  * Both apps write into the *same* shared `CodeBuddyExtension` auth directory
  * and differ only in the file's basename, so the per-platform ordering above
  * is reused verbatim and just the filename is swapped.
+ *
+ * The CodeBuddy CLI signs into that same directory under its own basename, so
+ * its file is appended after every desktop candidate: the desktop app remains
+ * the identity authority and the CLI is consulted only as a trailing fallback.
+ * An explicit `authFile`/env path is not extended this way — it is used
+ * verbatim, so a deliberate pointer never silently widens to another file.
  */
 declare function desktopAuthCandidatesFor(variant: WorkBuddyVariant): string[];
 /** First platform-default candidate; see {@link defaultDesktopAuthCandidates}. */
@@ -1060,6 +1066,7 @@ declare class WorkBuddyCredentialStore {
    * path, then the environment variable, then the platform defaults. An
    * explicit path is used verbatim; the defaults are a probe order.
    */
+  private explicitDesktopPath;
   private resolveDesktopCandidates;
   private resolveDesktopPath;
   /**
@@ -1098,8 +1105,24 @@ declare class WorkBuddyCredentialStore {
    * diagnosis rather than be papered over by the plugin-owned copy, which
    * belongs to whatever account was signed in when it was last refreshed.
    * Only an absent (or empty) file lets the probe continue.
+   *
+   * The CodeBuddy CLI's file sits at the end of the probe order and is read
+   * only when no desktop candidate yields a credential; see
+   * {@link readCliCredential} for its deliberately weaker rules.
    */
   private readDesktop;
+  /** The upstream desktop probe, verbatim; only the candidate list is given. */
+  private readDesktopCandidates;
+  /**
+   * The trailing CodeBuddy CLI fallback: the first CLI file that parses to a
+   * credential of *this* variant's region. Unlike the desktop probe this never
+   * throws and never decrypts — a CLI document that is absent, empty, tokenless,
+   * unreadable, encrypted, or of the other product's region is simply not a
+   * usable fallback and the probe moves on. The CLI is a convenience source,
+   * not the identity authority, so it must never turn a working desktop sign-in
+   * into a hard error nor mask one product's absence with the other's token.
+   */
+  private readCliCredential;
   /** Open a 5.6 encrypted desktop document into the regular credential shape. */
   private openEncryptedDesktop;
   /**
