@@ -11,3 +11,18 @@
 allowBuilds:
   '@google/genai': true
   protobufjs: true
+
+# Minutes a version must age before pnpm will install it. pnpm >= 11 defaults
+# this to 1440 (24h), and the release workflow pins pnpm 12 because
+# `--provenance` needs >= 12 — so CI inherits the 24h default and rejects this
+# lockfile outright: the DSH 0.2.1-rc.2 packages are newer than that, and every
+# entry is pinned exactly (ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION).
+#
+# Upstream never hits this because its diagnostics workflow pins pnpm 10, where
+# the default is 0. Pinning the value here makes the install depend on the
+# repository rather than on the pnpm version a given machine happens to run.
+#
+# 30 matches the maintainer's local setting: long enough to skip a release that
+# gets yanked within the hour, short enough for a dependency line that ships
+# several times a day. Raise it if you would rather wait out a longer window.
+minimumReleaseAge: 30
