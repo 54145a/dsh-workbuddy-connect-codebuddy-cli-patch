@@ -1,178 +1,139 @@
-# DSH WorkBuddy Connect
+# @54145a/dsh-workbuddy-connect —— 补丁分支（支持 CodeBuddy CLI 登录态）
 
 [English](./README.en.md) | 中文
 
-将已登录的 WorkBuddy / WorkBuddy AI 桌面应用中可用的模型接入 DeepSeek Harness；两版分别显示各自的模型分组，并沿用各自的账号登录与积分。
+本仓库是 [dsh-workbuddy-connect](https://github.com/corrinehu/dsh-workbuddy-connect)（上游）的**补丁分支**，以 `@54145a/dsh-workbuddy-connect` 为名发布到 npm，基线为上游 **v0.7.8**。
+
+上游只从 **WorkBuddy / WorkBuddy AI 桌面 App** 读取登录态。本补丁在此之上追加一个来源：**CodeBuddy CLI 的登录态**。以前必须装桌面 App 才能用 → 现在只装了 CodeBuddy CLI 并登录也能用。
+
+> 上游文档（安装、版本兼容表、已知限制、免责声明）请见
+> <https://github.com/corrinehu/dsh-workbuddy-connect>。
+> 本文件只说明**补丁改了什么、怎么装、以及它的边界**。
 
 ## 安装
 
-**前置**：本机已安装并登录 WorkBuddy（国内版）或 WorkBuddy AI 桌面 App。插件直接复用 App 的登录状态，账号切换自动跟随，两版互不影响。
-
-**推荐：把安装交给本机已有的 Agent**——任何具备终端与文件操作能力的助手（DSH Agent、Codex、Claude Code、Cursor 等）都可以，把下面这段话原样发给它：
-
-```text
-请帮我安装并验证 DSH（DeepSeek Harness）插件 dsh-workbuddy-connect（项目地址：https://github.com/corrinehu/dsh-workbuddy-connect）：
-先阅读项目 README，确认我实际使用的界面（Web / Desktop / TUI）与 DSH 内核版本，桌面版以 App 内置核心为准，不要用独立 CLI 的版本代替；
-再按版本对应关系从 npm 正式包安装（0.2.1-rc.2→0.7.8、0.2.1-rc.1→0.7.7、0.2.0-rc.2→0.7.6、rc.1→0.7.0、0.1.5–0.1.7→0.6.5），优先走本机受支持的非插件市场渠道；部分 Desktop 发行版（尤其官方 Electron 版）的 profile 由 App 管理，各发行版规则未必相同，先确认我所用的发行版，再探查其合规的安装方式，但不得绕过其校验；
-任何本地文件或配置改动，先征得我同意并做好备份；
-装完后验证模型选择器里出现 WorkBuddy 分组，并陪我完成一次简短对话；
-若 Desktop 安装仍因 generation 校验失败（如 @types/retry 误报），请如实报告、参照上游 dataelement/dsh-desktop#688，并建议我改用独立的 Web / TUI，不要修改依赖包或绕过校验。
-```
-
-内核与插件版本速查（完整对应表见文末「版本兼容与历史版本」）：
-
-| DSH 内核 | 推荐插件版 |
-|---|---|
-| 0.2.1-rc.2 | 0.7.8（npm latest） |
-| 0.2.1-rc.1 | 0.7.7 |
-| 0.2.0-rc.2 | 0.7.6 |
-| 0.2.0-rc.1 | 0.7.0 |
-| 0.1.5 – 0.1.7 | 0.6.5 |
-
-<details>
-<summary>手动安装（命令行，仅 Web / TUI）</summary>
-
 ```sh
-# Web（按实际内核固定版本，示例为 0.2.1-rc.2 → 0.7.8；也可用 github:corrinehu/dsh-workbuddy-connect 从源码安装）
-dsh plugin --profile web add dsh-workbuddy-connect@0.7.8
+# Web profile（内核 0.2.1-rc.2 → 本包 0.7.8）
+dsh plugin --profile web add @54145a/dsh-workbuddy-connect
 dsh web
 
-# TUI（示例为 0.1.x 内核；该 profile 需用 pnpm 11 安装，如 npx pnpm@11）
-dsh plugin --profile dsh-tui add dsh-workbuddy-connect@0.6.5
-dsh --profile dsh-tui
+# 或直接从仓库源码安装
+dsh plugin --profile web add github:54145a/dsh-workbuddy-connect
 ```
 
-</details>
-
-> **TUI 版本搭配**：终端壳 `@deepseek-harness-tui/dsh-tui` 需 0.10.0-beta.5 及以上，更早版本装本插件会启动失败（`events is not iterable`）；推理档位的手动检测仅 Web / Desktop 提供，TUI 没有。
-
-> **Desktop**：部分 Desktop 发行版（尤其官方 Electron 版）的 `desktop` profile 由 App 管理，官方版会直接拒绝独立 CLI 的 `--profile desktop`；其他发行版规则未必相同，请先检查你所用的发行版，不要盲用独立 CLI 的 `--profile desktop`。可以让 Agent 探查是否有合规的非市场安装路径，但不保证可行；切勿盲改 App 管理的目录或绕过其校验。
-
-**验证**：重启对应界面后，模型选择器出现「WorkBuddy / WorkBuddy AI」分组（只装一版就只验对应一组），并从分组里选一个模型完成一次简短对话、能正常回复，才算安装成功。
-
-## 功能
-
-- **开箱即用**：安装并启用插件后即可在 DSH 中直接使用，无需额外配置。
-
-![WorkBuddy 模型出现在 DSH 模型选择器中](assets/1.png)
-
-- **国内版与国际版并存**：国内版显示为「WorkBuddy」分组，国际版（WorkBuddy AI）显示为「WorkBuddy AI」分组，两版的模型、账号和积分互不混用。各自只跟随对应 App 的登录状态：只装国际版就只出现 WorkBuddy AI，两版都装则两组并存，退出一版则对应分组消失。设置里两张卡片分别展示各自账号与余额。
-
-![WorkBuddy AI 模型出现在 DSH 模型选择器中](assets/5.png)
-
-- **图片输入**：大部分模型支持在对话里直接粘贴或拖入图片（GLM-5.3-Flash、DeepSeek-V4 系列等）；少数纯文字模型（如 GLM-5.1、GLM-5.2）会明确提示不支持。
-
-- **推理档位**：WorkBuddy 明确声明的档位会直接显示，例如 GLM-5.3 和 GLM-5.3-Flash 可选 low / high / max。未声明档位的模型可在 Web 和 Desktop 的模型选择器中手动检测（发送少量请求，可能消耗积分）；未检测或没有可用档位的模型使用 WorkBuddy 默认档位。
-
-- **余额速览**：选中 WorkBuddy / WorkBuddy AI 模型时，输入框底部在模型选择器旁显示当前账号的剩余积分（如 `WB.3,401（积分）`、国际版 `WB AI.3,401（积分）`）。积分不自动轮询（每次读取都是真实计费查询），挂载时读取一次后可点积分文字前方的 ↻ 手动刷新。切换会话时组件可能短暂隐藏，模型选择就绪后自动恢复；即使模型没有推理档位检测入口或余额读取失败，刷新按钮仍保留。
-
-- **信息查看与检测**：设置 → 插件 → 对应卡片可查看账号、令牌有效期、剩余积分和模型优惠，也可手动刷新模型列表并查看当前列表来自上游还是内置兜底，或对可检测模型手动检测推理档位。DSH 0.1.5 的入口在「设置 → 插件」，0.1.6+ 移到主界面左侧栏「插件」面板（workbuddy-connect → 查看）；「设置 → 模型」页两代都不显示 WorkBuddy 条目，属有意设计。
-
-- **模型显隐**：两张卡片的「上下文窗口」标签里可勾选要在模型选择器中显示的模型。隐藏配置按登录账号分别保存：切换账号自动切换各自配置，切回后恢复；新账号和新上架模型默认显示。隐藏只影响选择器中的可选性，正在使用该模型的已有会话不受影响。
-
-![上下文窗口列表里的模型显隐（DSH 0.1.6+ 插件配置页）](assets/6.png)
-
-同一份界面在 DSH 0.1.5 的设置卡片中原样生效：
-
-![DSH 0.1.5 设置卡片中的模型显隐](assets/7.png)
-
-- **企业账号积分**：国内版企业账号（`enterpriseId` 非空）走企业计费接口读取周期额度，卡片显示「企业额度」与周期重置时间。
-
-- **费率比例**：每个模型名后直接显示积分倍率（如 `GLM-5.2 · x0.79`、`Hy3 · x0.00`），`/model` 弹窗与输入框的模型下拉都能看到；倍率仅用于显示，不影响实际请求。
-
-- **徽章展示**：促销徽章（限时免费、夜间折扣）直接跟在模型名后（如 `Hy4 preview · x0.00 · 限时免费`），设置卡片会汇总当前有优惠的模型，数据以 WorkBuddy 服务端为准、每次启动 DSH 时同步。国际版促销来自服务端 `modelPromotions`（含生效时段），过期后徽章自动撤销；由于服务端把折后价直接写进模型的倍率字段，原价无法还原，此时该模型倍率显示为「价格未知 — 刷新后更新」，而不是继续显示折扣价或「免费」。
-
-![设置卡片显示插件](assets/2.png)
-
-卡片展开后分「状态 / 上下文 / 明细」三个标签：状态页展示账号、令牌有效期、合计积分、模型列表来源与推理档位检测；上下文页列出各模型上下文窗口，国际版可在这里关闭「使用上游声明的最大上下文窗口」（默认开启，DSH 按上游最大窗口安排上下文压缩；关闭后改用上游默认窗口，偏好持久化）；明细页展示各套餐余量与模型优惠。国内版与国际版各有一张自己的卡片。
-
-![设置卡片显示账号与剩余积分](assets/3.png)
-
-## 推理档位为什么这样设计
-
-WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端自身的私有 UI 逻辑中，且模型目录变化很快。若插件根据经验为所有未声明模型补齐统一档位，就需要持续追赶这些未公开、没有稳定契约的产品逻辑。
-
-![设置档位](assets/4.png)
-
-
-实测还发现，有些模型虽然接受 `reasoning_effort` 参数，却可能忽略未知值并回退到默认行为；一次请求返回成功，并不能证明某个档位真实可用。
-
-因此，对于没有声明档位的模型，Web 和 Desktop 采用用户主动授权触发、动态获取档位的方式：先确认上游会校验该参数，再逐项确认哪些规范档位被接受。检测会发送少量请求，可能消耗积分；结果只表示当前上游接受该档位，不承诺它一定改变推理效果、速度或积分消耗。
-
-## 命令行
-
-`dsh plugin --profile <web|dsh-tui> exec dsh-workbuddy-connect status`：登录状态与剩余积分（`--json` 输出机器可读格式；另有 `doctor` 诊断、`logout` 清理凭据）。`desktop` profile 一般由桌面 App 管理，CLI（含 `exec`）对其不可用（见安装章节的 Desktop 说明）。
-
-默认操作国内版；加 `--provider workbuddy-ai` 操作国际版：
+登录一次即可 —— **桌面 App 或 CodeBuddy CLI 均可**：
 
 ```sh
-dsh plugin --profile web exec dsh-workbuddy-connect status --provider workbuddy-ai
-dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-ai
+codebuddy login          # 或者登录 WorkBuddy 桌面 App
 ```
 
-`logout` 只删除该版插件自留的凭据副本，不动桌面 App 自己的登录，也不承诺一定让模型分组消失（App 的凭据文件仍在时依然生效）。
+## 这个补丁做什么
 
-## 已知限制
+CodeBuddy CLI 与 WorkBuddy 桌面 App 把凭据写进**同一个目录**，只是文件名不同：
 
-- 在 macOS 的 DSH Web / Desktop / TUI 下验证通过（0.3.2 起要求 `0.1.5-rc.1`+、Node 22+；TUI 需终端界面插件 `0.10.0-beta.5` 及以上，见安装章节说明）。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE`（国际版为 `WORKBUDDY_AI_AUTH_FILE`）指定实际位置。
-- **加密桌面凭据的解密程序定位**：解密程序在 macOS 与 Windows 上会自动探测；Windows 上国内版先查默认路径 `%LOCALAPPDATA%\Programs\WorkBuddy\WorkBuddy.exe`，再查卸载注册表记录，国际版没有已验证的默认路径、仅查注册表。自动探测失败时，可用 `WORKBUDDY_ELECTRON_BIN`（国内版）或 `WORKBUDDY_AI_ELECTRON_BIN`（国际版）显式指定可执行文件，设置后需完全退出并重启 DSH 才生效。Linux 无法自动发现，需显式指定。WSL 下调用 Windows 侧解密程序时，插件会自动把子进程 `WSLENV` 中的 `ELECTRON_RUN_AS_NODE` 条目规范化为单一安全旗标（含 `/w` 转发、不做路径转换，其余条目原样保留），无需手动设置。此改动已通过离线回归测试，尚未完成 WSL2 / Windows 真机验证。
-- **国际版的模型目录来自 App 界面接口**：服务端按 User-Agent 分流下发，属私有实现，上游改动可能使其失效。届时插件按「本账号上次成功目录 → 内置目录」降级，并在卡片上标明来源（实时 / 已保存 / 内置）、更新时间与失败原因，但不能保证长期兼容。国内版目录走官方 CLI 同款接口，不受此影响。
-- **国际版仍未覆盖的环境**：Windows / WSL / Linux 下国际版 App 的版本读取尚未找到可靠来源，会退回最近保存的版本或内置值。macOS 上已通过真实 shim 验证 GPT 系完整回复、工具调用与续轮。
-- **无凭据时的行为变化**：某版 App 从未登录、也没留下插件自留副本时，该版模型分组不再显示。此前国内版会显示一份内置兜底列表，但那些模型选了必然报错。
-- **企业账号积分目前仅覆盖国内版**：国际版企业账号的计费接口尚未验证，仍按个人版接口读取；待有实测结论后再扩展。企业账号分支在本机无法自测（开发机为个人账号），依据官方 App 的接口契约实现，欢迎企业账号用户反馈实测结果。
-- **设置入口随 DSH 版本而异**：0.1.5 / 0.1.6 上插件照常安装 `authFile` / `authFileAI` 等设置分区（`settings.yaml` 与 TUI `/settings` 均可读写）；0.1.7+ / 0.2.0 的设置服务不再提供该接口，插件降级为无设置项的 provider——模型、选择器、模型显隐与上下文窗口照常工作，只是「使用上游声明的最大上下文窗口」这一偏好不再可持久化。
-- 依赖 WorkBuddy 客户端接口（非官方开放 API），WorkBuddy 更新后插件可能需要随之调整。
+| 来源 | 文件（同一目录下） |
+|---|---|
+| WorkBuddy 桌面 App（国内版） | `workbuddy-desktop.info` |
+| WorkBuddy AI 桌面 App（国际版） | `workbuddy-desktop-ai.info` |
+| **CodeBuddy CLI（本补丁新增）** | `Tencent-Cloud.coding-copilot.info` |
 
-## 版本兼容与历史版本
+目录本身（`CodeBuddyExtension/Data/Public/auth/`）及每个平台下的探测顺序完全沿用上游实现：macOS 的 `Application Support`、Windows 的 Local→Roaming AppData、Linux 的 XDG config→data home、WSL 优先挂载的 Windows 用户目录。补丁只是把 CLI 文件名**追加在每个桌面候选之后**，不新增任何路径规则。
 
-插件版本必须与 DSH 内核匹配，不匹配的组合会导致 DSH 启动失败；桌面版按其内置核心选择插件版本。npm 上的最新版不一定适合你，以实际内核的匹配关系为准：
+**桌面 App 仍然是身份权威**：只有当所有桌面候选都取不到凭据时，才会去读 CLI 文件。
 
-| DSH 内核 | 推荐插件版 | 注意事项 |
-|---|---|---|
-| `0.2.1-rc.2` | `0.7.8` | 仅适配这一内核；`0.2.0-rc.2` 与 `0.2.1-rc.2` 不同，请核对 App 内置版本。 |
-| `0.2.1-rc.1` | `0.7.7` | 内核升级到 `@earendil-works/pi-ai` 1.3.0，插件同步自带 1.3.0，历史遗留的 0.87.1 overrides 必须移除（见下方 pi-ai 说明）。 |
-| `0.2.0-rc.2` | `0.7.6` | 上一代内核线；修复企业账号模型目录缺项与国际版对话被渠道校验拦截，勿停留在有注册表回归的 0.7.2。 |
-| `0.2.0-rc.1` | `0.7.0` | 0.7.1 起不再支持 rc.1，请停留本版。 |
-| `0.1.5` – `0.1.7` | `0.6.5` | 旧内核最终版；0.7.0 起仅面向 0.2.0。 |
-| `0.1.2-rc.1` | `0.3.1` | 更早旧线，仅历史维护。 |
-| `0.1.1-rc.2` | `0.2.6` | 更早旧线，仅历史维护。 |
+## 行为契约
 
-历次更新（完整记录见 [releases](https://github.com/corrinehu/dsh-workbuddy-connect/releases)）：
+按重要程度排列，这些是本补丁刻意划定的边界：
 
-- **0.7.8**：适配 DSH 0.2.1-rc.2；将官方原子写入工具打包到插件，避免依赖宿主暴露该模块；更新国内模型目录快照，区分 Hy3 / Hy3-X；优化推理检测结果展示，调整积分刷新按钮位置并修正悬停提示。感谢 @chenpiyanghappy 的 PR [#156](https://github.com/corrinehu/dsh-workbuddy-connect/pull/156)。
-- **0.7.7**：适配 DSH 0.2.1-rc.1 内核：peer 收窄到 0.2.1-rc.1，插件自带的 `@earendil-works/pi-ai` 随内核升级到 1.3.0（profile 级历史遗留的 0.87.1 overrides 必须移除，否则插件无法加载）；修复国际版与国内版推理档位检测停留「检测未完成」——上游把档位拒绝码改拼为 `invalid_parameter_value`（[#143](https://github.com/corrinehu/dsh-workbuddy-connect/issues/143) / [#148](https://github.com/corrinehu/dsh-workbuddy-connect/issues/148)，PR [#145](https://github.com/corrinehu/dsh-workbuddy-connect/pull/145)）；修复中文 Windows 控制台下注册表缺键诊断因 GBK 编码被误判（zh-CN 实机验证）。
-- **0.7.6**：修复企业账号模型目录缺少 `glm-5.3-flashx`（[#123](https://github.com/corrinehu/dsh-workbuddy-connect/issues/123)），修复国际版对话请求被上游渠道校验拦截（[#139](https://github.com/corrinehu/dsh-workbuddy-connect/issues/139) / [#142](https://github.com/corrinehu/dsh-workbuddy-connect/issues/142)）。
-- **0.7.5**：修复切换会话后输入框余额与刷新按钮消失（[#125](https://github.com/corrinehu/dsh-workbuddy-connect/issues/125) / [#132](https://github.com/corrinehu/dsh-workbuddy-connect/issues/132)），修复 WSL 调用 Windows 凭据解密程序的环境转发（[#133](https://github.com/corrinehu/dsh-workbuddy-connect/issues/133)），README 收录社区项目（[#130](https://github.com/corrinehu/dsh-workbuddy-connect/issues/130)）。
-- **0.7.4**：Windows 诊断与稳定性改进：注册表子进程输出超限准确分类、跨平台测试假设修正（[#62](https://github.com/corrinehu/dsh-workbuddy-connect/issues/62)），安装说明重排。
-- **0.7.3**：修复 Windows 非默认安装路径下注册表自动发现失败（[#105](https://github.com/corrinehu/dsh-workbuddy-connect/issues/105)）。
-- **0.7.2**：pi-ai 改为插件自带依赖，并修复推理字段请求被拒（[#92](https://github.com/corrinehu/dsh-workbuddy-connect/issues/92)）；该版存在 Windows 注册表回归，请使用 0.7.4 或更新的正式版本。
-- **0.7.1**：收窄 pi-ai 依赖范围。
-- **0.7.0**：适配 DSH 0.2.0 的设置服务改造，不再支持 0.1.x。
-- **0.6.5**：0.1.x 线最终版本。
+1. **桌面优先，CLI 兜底。** 桌面 App 已登录时永远用桌面凭据，CLI 文件连读都不读。桌面 App 登出（文件仍是合法 JSON 但没有 token）时，才回落到 CLI。
+2. **损坏仍然报错，不被 CLI 掩盖。** 桌面文件存在但不可解析、或加密凭据解密失败时，照上游语义**抛错**。桌面文件是身份权威，坏文件是需要修的问题，不是绕过的理由。
+3. **跨区只跳过，不报错。** 两个产品共用一个目录，所以「国际版插件遇到国内版 CLI 登录态」是**共存**而非配置错误：区域不匹配的 CLI 文件被静默跳过（`current()` 里那个 `credential-region-mismatch` 抛错只保留给**桌面**文件被指错产品的情况）。两版的 CLI 登录态各自只对自己那版生效。
+4. **显式路径不被拓宽。** 配置项 `authFile` / 环境变量 `WORKBUDDY_AUTH_FILE`（国际版 `WORKBUDDY_AI_AUTH_FILE`）指定的路径**原样使用**，不会顺带追加 CLI 文件。即使该路径指向的正是 CLI 文件名，也按桌面语义处理。
+5. **绝不回写 CLI 文件。** CLI 的登录文件由 CLI 自己拥有。刷新后的凭据写入插件自留副本（`$DSH_HOME` 下），与上游处理桌面文件的方式一致。
+6. **状态里仍显示 `desktop`。** 本补丁**不**新增 `cli` 来源标签 —— CLI 凭据在读入时就进入「桌面」槽位，所以 `status` / `doctor` 的 `source` 字段在 CLI 登录时依旧输出 `desktop`。改动面越小越容易随上游 rebase。
 
-固定版本安装示例：`dsh plugin --profile web add dsh-workbuddy-connect@0.7.8`。
+## 与上游的差异（改动清单）
 
-**pi-ai 版本按内核线区分，不能混**：0.2.1-rc.1 / rc.2 内核线（分别对应插件 0.7.7 / 0.7.8）已升级到 `@earendil-works/pi-ai` 1.3.0（由插件自带），profile 级历史遗留的 `overrides: {'@earendil-works/pi-ai': '0.87.1'}` **必须移除**，否则插件会因加载到旧一代 pi-ai 而启动失败；0.2.0-rc.2 内核线（插件 0.7.6）仍要求 `^0.87.1`，在这条线上**不要**把 profile 级的 pi-ai 升到 1.x，第三方插件管理器的「可更新」提示不校验 peer 约束、不能照做（[#86](https://github.com/corrinehu/dsh-workbuddy-connect/issues/86)）。
+相对上游 v0.7.8：
 
-## 免责声明
+| 文件 | 改动 |
+|---|---|
+| `src/auth.ts` | 核心：`CLI_AUTH_FILENAME` 常量、候选列表追加 CLI 文件、`readDesktop()` 拆成「上游桌面段（逐字保留）+ 区域过滤的 CLI 段」 |
+| `src/bin.ts` | 仅文案：doctor 提示提及 CLI |
+| `src/client/locales.ts` | 仅文案：`intro` / `signedOutHint` 中英各 2 条提及 CLI |
+| `package.json` | 包名改为 `@54145a/dsh-workbuddy-connect`、作者/仓库指向本 fork |
+| `cordis.patch.yml` | patch 条目的 `name` 随包名改为带 scope 形式 |
+| `tests/*.spec.ts` | 改写 2 处受候选追加影响的断言，新增 CLI 兜底用例 |
+| `.github/workflows/release.yml` | 新增：打 tag 触发发布到 npm |
 
-- 本项目**仅供个人学习和研究使用**，仅驱动使用者自己的 WorkBuddy 账号在本机调用，请勿用于商业用途或超出个人合理使用的场景。
-- 使用者需遵守 WorkBuddy 的服务条款；因使用本项目产生的任何后果（包括但不限于账号被限制、额度被清空、服务中断），由使用者自行承担。
-- 本项目作者不对任何因使用或滥用本项目产生的直接或间接损失负责。
-- 本项目与腾讯、WorkBuddy、DeepSeek 均无关联，未获其授权或认可；文中出现的名称仅用于描述兼容关系，其商标权利归各自所有。
+**未改动**：`upstream.ts`、`variants.ts`、`status-paths.ts`、`desktop-credential-protection.ts`、`catalog.ts`、`web-status.ts`。路由 `/plugins/dsh-workbuddy-connect/...` 是硬编码字面量，与包名无关，因此改 scope 不影响它。
 
-## 相关项目 / 社区生态
+## 发布（维护者）
 
-- **[HanaAgent](https://github.com/liliMozi/openhanako)**：独立的个人 AI Agent 项目。
-- **[hana-workbuddy-connect](https://github.com/miaoyongxu/hana-workbuddy-connect)**：社区维护的非官方适配项目，复用 `dsh-workbuddy-connect` 的部分实现，为 HanaAgent 接入 WorkBuddy / WorkBuddy AI 模型。
+打 tag 即触发 `.github/workflows/release.yml`：
 
-以上项目均由第三方独立维护。其中，`hana-workbuddy-connect` 的兼容性、安全性及使用支持由其维护者负责。收录不代表官方背书，也不意味着本插件对内部接口提供稳定性或兼容性承诺。
+```sh
+# 1. 先 bump 版本并重建
+npm version 0.7.9 --no-git-tag-version   # 或手动改 package.json
+pnpm check                               # typecheck + 测试 + 构建，重建 lib/
+git commit -am "chore: release 0.7.9"
+git push
 
-## 致谢
+# 2. 打 tag 并推送 —— 这一步触发发布
+git tag v0.7.9
+git push origin v0.7.9
+```
 
-- [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)（MIT）— WorkBuddy 上游协议的参照实现。
-- [franksong2702/dsh-codex-connect](https://github.com/franksong2702/dsh-codex-connect)（Apache-2.0）— DSH 插件结构与 provider 注册的参照。
+workflow 会在 `v*` tag 上：安装依赖 → 跑 `pnpm check` → `pnpm publish --access public --provenance`（用仓库 secret `NPM_TOKEN`）。
+
+全程只用 pnpm，不混用 npm。这里有个**必须 pin pnpm 12** 的理由，不是随手选的版本：
+
+- `--provenance` 需要 pnpm **≥ 12**（pnpm 10/11 的 `publish` 没有该参数）。上游 `diagnostics.yml` pin 的是 pnpm 10 —— 那是"跑测试"的版本，不能照抄来发布。
+- pnpm **拒绝**从**项目级** `.npmrc` 展开 `${NODE_AUTH_TOKEN}`（安全策略：仓库可控的文件不得读取凭据）。所以认证依赖 `actions/setup-node` 把 `.npmrc` 写到 `$RUNNER_TEMP`（仓库之外）并导出 `NPM_CONFIG_USERCONFIG`，pnpm 才会按用户级配置展开。
+- workflow 显式设 `NPM_CONFIG_REGISTRY=https://registry.npmjs.org/`：发布是唯一"落错 registry 不是性能问题"的操作。
+- `--no-git-checks` 是**必需**而非走捷径：`actions/checkout` 在 tag 上是 detached HEAD，而 pnpm 默认的 `publish-branch` 检查（`master|main`）要求已附加到分支，否则报 `ERR_PNPM_GIT_UNKNOWN_BRANCH`。工作树是否干净已由前面的 `pnpm check` 保证。
+
+**前置配置（一次性）**：在 GitHub 仓库 Settings → Secrets and variables → Actions 添加 `NPM_TOKEN`，值为 npm **Automation** 类型的 token（该类型绕过 OTP，适合 CI）。token 需有 `@54145a` scope 的发布权。
+
+## 使用
+
+```sh
+dsh plugin --profile web exec dsh-workbuddy-connect doctor --json
+dsh plugin --profile web exec dsh-workbuddy-connect status --json
+```
+
+`exec` 后的命令名是包的 **bin 名**（`dsh-workbuddy-connect`），与包名带不带 scope 无关。
+
+仅用 CodeBuddy CLI 登录时，`doctor` 会报告：
+
+```json
+{
+  "desktopAuthFile": {
+    "path": "/home/<user>/.local/share/CodeBuddyExtension/Data/Public/auth/Tencent-Cloud.coding-copilot.info",
+    "present": true,
+    "format": "plaintext"
+  },
+  "signIn": "signed-in"
+}
+```
+
+`path` 指向**实际命中的那个文件**（这里就是 CLI 文件），这是上游既有的诊断语义。
+
+## 已知边界与风险
+
+- **refresh_token 轮换竞争（真实存在，本补丁不处理）。** CLI 与 WorkBuddy 的刷新端点相同，且刷新会**轮换** refresh_token：一次实测中 refresh_token 从 1088 字符变为 700 字符。如果插件、真正的 CodeBuddy CLI、乃至 `dsh-codebuddy-cli` 同时持有同一账号的刷新链，先刷新的一方会让另一方手里的 refresh_token 失效。这**与上游现状同级**（上游同样与桌面 App 共享刷新链），因此不改代码，只在此警示：出现莫名的「登录失效」时重新登录一次即可。
+- **CLI 文件格式依赖真机。** 已实测 CodeBuddy CLI 2.63.x 的国内账号文件为**明文 JSON**（`auth.domain = "www.codebuddy.cn"`），上游现成的解析器可直接读取。若 CLI 未来改为加密信封或换 schema，该文件会被判为 `unrecognized`/`encrypted` 而**静默跳过**（兜底段永不抛错），表现为「CLI 登录态用不了」而非报错。
+- **XDG 边缘情形。** 本机实测 CLI 写在 `~/.local/share`（data home），上游的 Linux 候选两者都探测，所以正常命中。若你设了非默认 `XDG_CONFIG_HOME`/`XDG_DATA_HOME` 而 CLI 只认其中之一，兜底可能漏 —— 此时用 `WORKBUDDY_AUTH_FILE` 直指 CLI 文件即可（会按桌面语义处理，见契约 4）。
+- **国际版 `doctor` 的 `present` 标志偏乐观。** 仅有国内版 CLI 文件时，国际版的 `present` 仍显示 `true`（文件确实存在），但该凭据会被区域跳过、`signIn` 仍是 `signed-out`。纯展示层面的不精确，已接受。
+- **peer 依赖按内核线绑定。** 本包面向 DSH 内核 **0.2.1-rc.2**。内核 0.2.1-rc.1 请用上游 0.7.7，0.2.0-rc.2 请用上游 0.7.6。装错内核线会导致 DSH 启动失败。
+- **未覆盖 CLI 的其他能力。** 只做登录态复用，不涉及 CLI 的 `X-IDE-Type: cli` 客户端身份、多账号、每日签到与积分面板。
+
+## 验证
+
+- 单元测试：`pnpm check`（typecheck + 804 项测试 + 构建）全绿；新增的 CLI 兜底用例在**未打补丁**的代码上会失败，确保不是空测试。
+- 真机（本机无 WorkBuddy 桌面 App，仅有 CodeBuddy CLI 登录）：装进真实 DSH Web profile 后，`GET /plugins/dsh-workbuddy-connect/status` 返回 `signed-in`、真实账号与 `catalog.source: live`；auth 目录下**只有** CLI 文件，无桌面文件、无插件自留副本 —— 该登录态只能来自 CLI。
+- 刷新链路：用 CLI 凭据走 WorkBuddy 的刷新端点成功换发新 access token，且**原始 CLI 文件字节级未被修改**（前后 sha256 一致）。
 
 ## 许可证
 
-[MIT](./LICENSE)
+同上游，[MIT](./LICENSE)。

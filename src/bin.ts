@@ -124,8 +124,8 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
     fallbackModels: fallbackCount(variant),
     hints: [
       ...decryptionNote !== undefined ? [decryptionNote]
-        : status.state === 'signed-out' ? [`Sign in once in the ${variant.appName} desktop app, then run status again.`] : [],
-      ...desktopPresent ? [] : [`No ${variant.appName} desktop auth file at the expected path; set ${variant.env} if it lives elsewhere.`],
+        : status.state === 'signed-out' ? [`Sign in once in the ${variant.appName} desktop app or the CodeBuddy CLI, then run status again.`] : [],
+      ...desktopPresent ? [] : [`No ${variant.appName} desktop auth file (or CodeBuddy CLI auth file) at the expected path; set ${variant.env} if it lives elsewhere.`],
       ...hostAlive ? [] : ['Host bundle not running in this DSH profile (or the process exited). The browser card and provider are unavailable until DSH starts the plugin.'],
     ],
   }
