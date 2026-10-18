@@ -116,12 +116,46 @@ describe('doctor desktop auth format', () => {
     expect((broken.json['desktopAuthFile'] as Record<string, unknown>)['format']).toBe('unrecognized')
   })
 
-  // Windows-gated (#62): the fixture points the XDG overrides at real temp
+  // Windows-gated: the fixture points the XDG overrides at real temp
   // dirs. On a Windows host those are drive-letter paths, which the Linux
   // branch's (correct) `startsWith('/')` adoption rule rejects, so doctor
   // would report the fallback candidates instead of the data-home file. The
   // doctor wiring itself stays covered on every platform by the first three
   // tests in this file, which use WORKBUDDY_AUTH_FILE directly.
+  it.skipIf(process.platform === 'win32')('reports a signed-in state from the CodeBuddy CLI file alone', async () => {
+    // No desktop app installed: only the CLI's file exists, in the same shared
+    // auth directory. Doctor must treat it as present and usable — the CLI is a
+    // first-class sign-in source, so the exit code must not stay non-zero.
+    root = await mkdtemp(join(tmpdir(), 'wb-doctor-cli-'))
+    const dataAuth = join(root, 'data', 'CodeBuddyExtension', 'Data', 'Public', 'auth')
+    await mkdir(dataAuth, { recursive: true })
+    await writeFile(join(dataAuth, 'Tencent-Cloud.coding-copilot.info'), plaintextDocument())
+    const savedPlatform = process.platform
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    vi.stubEnv('DSH_HOME', join(root, 'dsh-home'))
+    vi.stubEnv('XDG_CONFIG_HOME', join(root, 'config'))
+    vi.stubEnv('XDG_DATA_HOME', join(root, 'data'))
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', '')
+    vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', '')
+    try {
+      const { code, json } = await captureDoctor(['doctor', '--json'])
+      expect(json['signIn']).toBe('signed-in')
+      expect(code).toBe(0)
+      const file = json['desktopAuthFile'] as Record<string, unknown>
+      expect(file['present']).toBe(true)
+      expect(file['format']).toBe('plaintext')
+      expect(file['path']).toBe(join(dataAuth, 'Tencent-Cloud.coding-copilot.info'))
+      // A working CLI sign-in must not be nagged about: the file counts as
+      // present, so neither the "sign in once" nor the "no auth file" hint is
+      // emitted. Only the host-bundle notice remains.
+      const hints = json['hints'] as string[]
+      expect(hints.some(hint => hint.includes('Sign in once'))).toBe(false)
+      expect(hints.some(hint => hint.includes('desktop auth file'))).toBe(false)
+    } finally {
+      Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true })
+    }
+  })
+
   it.skipIf(process.platform === 'win32')('reports the XDG data-home file as the desktop auth path when only it exists', async () => {
     // Issue #43: the first *candidate* on Linux is the config home, but the
     // file actually lives under the data home on UOS/deepin. Doctor must name

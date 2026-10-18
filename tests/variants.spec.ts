@@ -1,8 +1,8 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { WorkBuddyCredentialStore, desktopAuthCandidatesFor, parseWorkBuddyAuth } from '../src/auth.ts'
+import { CLI_AUTH_FILENAME, WorkBuddyCredentialStore, desktopAuthCandidatesFor, parseWorkBuddyAuth } from '../src/auth.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from '../src/catalog.ts'
 import { AI_VARIANT, CN_VARIANT, variantFor, WORKBUDDY_VARIANTS } from '../src/variants.ts'
 import { modelWithCurrentPromotion, parseModelCatalog, prepareInternationalChatBody, WorkBuddyUpstreamClient } from '../src/upstream.ts'
@@ -81,13 +81,38 @@ describe('variant descriptors', () => {
   it('reuses the platform probe order when swapping the basename', () => {
     // Both apps write into the same shared CodeBuddyExtension directory, so only
     // the filename may differ — the per-platform ordering must survive intact.
-    const cn = desktopAuthCandidatesFor(CN_VARIANT)
-    const ai = desktopAuthCandidatesFor(AI_VARIANT)
+    // The trailing CodeBuddy CLI fallbacks are identical for both variants
+    // (they carry no variant basename), so they are compared once and removed.
+    const cli = desktopAuthCandidatesFor(CN_VARIANT).filter(path => path.endsWith(CLI_AUTH_FILENAME))
+    expect(cli.length).toBeGreaterThan(0)
+    const cn = desktopAuthCandidatesFor(CN_VARIANT).filter(path => !path.endsWith(CLI_AUTH_FILENAME))
+    const ai = desktopAuthCandidatesFor(AI_VARIANT).filter(path => !path.endsWith(CLI_AUTH_FILENAME))
     expect(ai).toHaveLength(cn.length)
     for (const [index, path] of ai.entries()) {
       expect(path.endsWith('workbuddy-desktop-ai.info')).toBe(true)
       expect(cn[index]!.replace(/workbuddy-desktop\.info$/, 'workbuddy-desktop-ai.info')).toBe(path)
     }
+    // The CLI fallback is appended after every desktop candidate, never before.
+    const cnAll = desktopAuthCandidatesFor(CN_VARIANT)
+    const firstCli = cnAll.findIndex(path => path.endsWith(CLI_AUTH_FILENAME))
+    expect(firstCli).toBe(cn.length)
+  })
+
+  it('offers the CodeBuddy CLI file as a trailing fallback in the shared directory', () => {
+    // Same directory, different basename: the CLI sign-in is picked up without
+    // any new path logic, and it never displaces a desktop candidate.
+    const candidates = desktopAuthCandidatesFor(CN_VARIANT)
+    const desktopDirs = new Set(
+      candidates.filter(path => !path.endsWith(CLI_AUTH_FILENAME)).map(path => dirname(path)),
+    )
+    const cliCandidates = candidates.filter(path => path.endsWith(CLI_AUTH_FILENAME))
+    expect(cliCandidates.length).toBe(desktopDirs.size)
+    // Every CLI candidate sits in a directory the desktop probe already covers,
+    // so both sign-ins follow one platform layout (XDG data home and WSL's
+    // mounted Windows profile included) instead of a duplicated path table.
+    for (const path of cliCandidates) expect(desktopDirs.has(dirname(path))).toBe(true)
+    // Both variants see it, since one CLI sign-in is not product-specific.
+    expect(desktopAuthCandidatesFor(AI_VARIANT)).toContainEqual(candidates.at(-1))
   })
 
   it('resolves a variant by provider id and nothing else', () => {

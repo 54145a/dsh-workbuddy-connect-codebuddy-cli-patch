@@ -5,6 +5,12 @@
  * The effective credential is whichever of the two expires later, so a
  * refresh by either side wins.
  *
+ * The CodeBuddy CLI signs into the *same* shared auth directory under its own
+ * filename, so its file is appended to the probe as a trailing fallback: the
+ * desktop app stays the identity authority, and the CLI is consulted only
+ * when no desktop candidate yields a credential. A CLI credential is never
+ * written back to — refreshes land in the plugin-owned copy as usual.
+ *
  * @module dsh-workbuddy-connect/auth
  */
 
@@ -89,6 +95,15 @@ export const WORKBUDDY_AUTH_FILENAME = '.workbuddy-auth.json'
 
 /** Env variable that overrides the desktop auth-file location. */
 export const WORKBUDDY_AUTH_FILE_ENV = 'WORKBUDDY_AUTH_FILE'
+
+/**
+ * Basename of the CodeBuddy CLI's auth file. The CLI writes it into the same
+ * `CodeBuddyExtension/Data/Public/auth` directory as the desktop app, so only
+ * the basename separates the two sign-ins. Verified shape (CLI 2.63.x, CN
+ * account): plaintext JSON with `auth.domain = "www.codebuddy.cn"`, which the
+ * existing desktop parser reads unchanged.
+ */
+export const CLI_AUTH_FILENAME = 'Tencent-Cloud.coding-copilot.info'
 
 /** Current on-disk format of the plugin-owned copy; readers reject others. */
 const OWN_FORMAT_VERSION = 1
@@ -184,9 +199,30 @@ function dedupeCandidates(candidates: readonly string[]): string[] {
  * Both apps write into the *same* shared `CodeBuddyExtension` auth directory
  * and differ only in the file's basename, so the per-platform ordering above
  * is reused verbatim and just the filename is swapped.
+ *
+ * The CodeBuddy CLI signs into that same directory under its own basename, so
+ * its file is appended after every desktop candidate: the desktop app remains
+ * the identity authority and the CLI is consulted only as a trailing fallback.
+ * An explicit `authFile`/env path is not extended this way — it is used
+ * verbatim, so a deliberate pointer never silently widens to another file.
  */
 export function desktopAuthCandidatesFor(variant: WorkBuddyVariant): string[] {
-  return dedupeCandidates(defaultDesktopAuthCandidates().map(path => join(dirname(path), variant.desktopFilename)))
+  return withCliFallback(
+    defaultDesktopAuthCandidates().map(path => join(dirname(path), variant.desktopFilename)),
+  )
+}
+
+/**
+ * Append the CodeBuddy CLI's file from each auth directory the desktop probe
+ * covers, as trailing fallbacks. Deriving them from the desktop candidates
+ * keeps both sign-ins on one platform layout — XDG data-home copies and WSL's
+ * mounted Windows profile included — instead of duplicating that logic.
+ */
+function withCliFallback(desktopCandidates: readonly string[]): string[] {
+  return dedupeCandidates([
+    ...desktopCandidates,
+    ...desktopCandidates.map(path => join(dirname(path), CLI_AUTH_FILENAME)),
+  ])
 }
 
 /** First platform-default candidate; see {@link defaultDesktopAuthCandidates}. */
@@ -334,14 +370,17 @@ export class WorkBuddyCredentialStore {
    * path, then the environment variable, then the platform defaults. An
    * explicit path is used verbatim; the defaults are a probe order.
    */
-  private resolveDesktopCandidates(): string[] {
+  private explicitDesktopPath(): string | undefined {
     const fromEnv = process.env[this.variant?.env ?? WORKBUDDY_AUTH_FILE_ENV]
-    const explicit = this.desktopPathOverride
+    return this.desktopPathOverride
       ?? (fromEnv !== undefined && fromEnv.trim() !== '' ? fromEnv : undefined)
+  }
+
+  private resolveDesktopCandidates(): string[] {
+    const explicit = this.explicitDesktopPath()
     if (explicit !== undefined) return [explicit]
-    return this.variant === undefined
-      ? defaultDesktopAuthCandidates()
-      : desktopAuthCandidatesFor(this.variant)
+    if (this.variant === undefined) return withCliFallback(defaultDesktopAuthCandidates())
+    return desktopAuthCandidatesFor(this.variant)
   }
 
   private resolveDesktopPath(): string | undefined {
@@ -412,6 +451,7 @@ export class WorkBuddyCredentialStore {
       const app = this.variant?.appName ?? 'WorkBuddy'
       throw new Error(
         `workbuddy: no signed-in ${app} account found; sign in once in the ${app} desktop app`
+        + ` or the CodeBuddy CLI`
         + ` (expected ${desktop} or ${this.variant?.env ?? WORKBUDDY_AUTH_FILE_ENV}), or refresh an existing session`,
       )
     }
@@ -517,9 +557,29 @@ export class WorkBuddyCredentialStore {
    * diagnosis rather than be papered over by the plugin-owned copy, which
    * belongs to whatever account was signed in when it was last refreshed.
    * Only an absent (or empty) file lets the probe continue.
+   *
+   * The CodeBuddy CLI's file sits at the end of the probe order and is read
+   * only when no desktop candidate yields a credential; see
+   * {@link readCliCredential} for its deliberately weaker rules.
    */
   private async readDesktop(): Promise<WorkBuddyCredential | undefined> {
-    for (const desktopPath of this.resolveDesktopCandidates()) {
+    const candidates = this.resolveDesktopCandidates()
+    // A configured/env pointer is authoritative for its slot, so it keeps the
+    // desktop probe's fail-loudly semantics even when it names the CLI's file:
+    // an explicit path aimed at the wrong region must still say so rather than
+    // be silently skipped as a foreign fallback.
+    const explicit = this.explicitDesktopPath() !== undefined
+    const desktopCandidates = explicit
+      ? candidates
+      : candidates.filter(path => basename(path) !== CLI_AUTH_FILENAME)
+    const desktop = await this.readDesktopCandidates(desktopCandidates)
+    if (desktop !== undefined || explicit) return desktop
+    return await this.readCliCredential(candidates)
+  }
+
+  /** The upstream desktop probe, verbatim; only the candidate list is given. */
+  private async readDesktopCandidates(candidates: readonly string[]): Promise<WorkBuddyCredential | undefined> {
+    for (const desktopPath of candidates) {
       let text: string
       try {
         text = await readFile(desktopPath, 'utf8')
@@ -538,6 +598,39 @@ export class WorkBuddyCredentialStore {
         )
       }
       return await this.openEncryptedDesktop(classification)
+    }
+    return undefined
+  }
+
+  /**
+   * The trailing CodeBuddy CLI fallback: the first CLI file that parses to a
+   * credential of *this* variant's region. Unlike the desktop probe this never
+   * throws and never decrypts — a CLI document that is absent, empty, tokenless,
+   * unreadable, encrypted, or of the other product's region is simply not a
+   * usable fallback and the probe moves on. The CLI is a convenience source,
+   * not the identity authority, so it must never turn a working desktop sign-in
+   * into a hard error nor mask one product's absence with the other's token.
+   */
+  private async readCliCredential(candidates: readonly string[]): Promise<WorkBuddyCredential | undefined> {
+    for (const cliPath of candidates) {
+      if (basename(cliPath) !== CLI_AUTH_FILENAME) continue
+      let text: string
+      try {
+        text = await readFile(cliPath, 'utf8')
+      } catch (error: unknown) {
+        if (!isENOENT(error)) throw error
+        continue
+      }
+      const classification = classifyDesktopAuthDocument(text)
+      if (classification.format !== 'plaintext') continue
+      const credential = parseWorkBuddyAuth(text)
+      if (credential === undefined) continue
+      // The two products share one directory, so a CLI sign-in for the other
+      // region is a realistic coexistence rather than a misconfiguration: it
+      // is skipped here instead of raising the `credential-region-mismatch`
+      // that `current()` reserves for a *desktop* file pointed at the wrong app.
+      if (this.variant !== undefined && regionOf(credential.domain) !== this.variant.region) continue
+      return credential
     }
     return undefined
   }

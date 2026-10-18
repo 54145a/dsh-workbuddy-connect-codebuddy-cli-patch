@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  CLI_AUTH_FILENAME,
   defaultDesktopAuthCandidates,
   desktopAuthCandidatesFor,
   parseWorkBuddyAuth,
@@ -434,9 +435,12 @@ async function asLinux<T>(options: {
   it('swaps only the basename for the AI variant and still honors the env override', async () => {
     await asLinux({ home: '/home/alice' }, async () => {
       const aiTail = join('CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop-ai.info')
+      const cliTail = join('CodeBuddyExtension', 'Data', 'Public', 'auth', CLI_AUTH_FILENAME)
       expect(desktopAuthCandidatesFor(AI_VARIANT)).toEqual([
         join('/home/alice/.config', aiTail),
         join('/home/alice/.local/share', aiTail),
+        join('/home/alice/.config', cliTail),
+        join('/home/alice/.local/share', cliTail),
       ])
       // The explicit env override outranks every default candidate.
       vi.stubEnv(AI_VARIANT.env, '/explicit/ai-credential.info')
@@ -547,6 +551,204 @@ async function asLinux<T>(options: {
         join('/mnt/d/Users/alice/AppData/Local', AUTH_TAIL),
         join('/mnt/d/Users/alice/AppData/Roaming', AUTH_TAIL),
       ])
+    })
+  })
+})
+
+/**
+ * The CodeBuddy CLI fallback. The CLI writes its own auth file into the same
+ * `CodeBuddyExtension/Data/Public/auth` directory the desktop app uses, so the
+ * plugin can reuse a CLI sign-in without a desktop app installed. The desktop
+ * app stays the identity authority: the CLI file is only consulted when no
+ * desktop candidate yields a credential, and it never turns a readable desktop
+ * sign-in into an error.
+ */
+describe('CodeBuddy CLI fallback', () => {
+  /** Run with the platform stubbed to a plain Linux and a fixed home. */
+  async function asLinuxHome<T>(home: string, run: () => Promise<T>): Promise<T> {
+    const savedPlatform = process.platform
+    const managed = ['XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'WSL_DISTRO_NAME', 'WSL_INTEROP']
+    const savedEnv = Object.fromEntries(managed.map(name => [name, process.env[name]]))
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    fakeOs.home = home
+    fakeOs.release = '6.12.0-generic'
+    for (const name of managed) delete process.env[name]
+    try {
+      return await run()
+    } finally {
+      Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true })
+      fakeOs.home = undefined
+      fakeOs.release = undefined
+      for (const [name, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  }
+
+  /** A CLI-shaped document; the real CLI writes this same plaintext shape. */
+  function cliDoc(options: {
+    expiresAt?: number
+    domain?: string
+    accessToken?: string
+    refreshToken?: string
+  } = {}): string {
+    return JSON.stringify({
+      auth: {
+        accessToken: options.accessToken ?? 'cli-at',
+        refreshToken: options.refreshToken ?? 'cli-rt',
+        expiresAt: options.expiresAt ?? Date.now() + 3600_000,
+        domain: options.domain ?? 'www.codebuddy.cn',
+      },
+      account: { uid: 'cli-uid', nickname: 'cli-nick' },
+      accounts: [{ uid: 'cli-uid' }],
+    })
+  }
+
+  /** A store over a temp auth dir, with no desktop file unless written. */
+  async function cliStore(variant: typeof CN_VARIANT, files: Record<string, string>): Promise<{
+    store: WorkBuddyCredentialStore
+    authDir: string
+  }> {
+    const root = await mkdtemp(join(tmpdir(), 'wb-cli-'))
+    CLEANUP.push(() => rm(root, { recursive: true, force: true }))
+    const authDir = join(root, 'CodeBuddyExtension', 'Data', 'Public', 'auth')
+    await mkdir(authDir, { recursive: true })
+    for (const [name, contents] of Object.entries(files)) {
+      await writeFile(join(authDir, name), contents)
+    }
+    // Route the probe at the fixture directory without naming a file, so the
+    // candidate order (desktop first, CLI trailing) is what is exercised.
+    vi.stubEnv('XDG_CONFIG_HOME', root)
+    vi.stubEnv('XDG_DATA_HOME', join(root, 'unused-data'))
+    const store = new WorkBuddyCredentialStore({
+      variant,
+      ownPath: join(root, 'own.json'),
+      refresh: async credential => ({ accessToken: credential.accessToken }),
+    })
+    return { store, authDir }
+  }
+
+  it('signs in from the CLI file when no desktop app is installed', async () => {
+    await asLinuxHome('/home/alice', async () => {
+      const { store } = await cliStore(CN_VARIANT, { [CLI_AUTH_FILENAME]: cliDoc() })
+      await expect(store.status()).resolves.toMatchObject({
+        state: 'signed-in',
+        // The CLI credential enters the merge as the desktop slot, so the
+        // existing status contract is unchanged: no new source label.
+        source: 'desktop',
+        domain: 'www.codebuddy.cn',
+        nickname: 'cli-nick',
+      })
+      await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'cli-at', uid: 'cli-uid' })
+    })
+  })
+
+  it('keeps the desktop app as the identity authority when both are signed in', async () => {
+    await asLinuxHome('/home/alice', async () => {
+      const { store } = await cliStore(CN_VARIANT, {
+        'workbuddy-desktop.info': nestedDoc(Date.now() + 3600_000),
+        [CLI_AUTH_FILENAME]: cliDoc({ accessToken: 'cli-at' }),
+      })
+      // The desktop credential wins even though the CLI one would also parse.
+      await expect(store.current()).resolves.toMatchObject({ accessToken: 'at', uid: 'uid-1' })
+    })
+  })
+
+  it('falls back to the CLI after the desktop app signs out', async () => {
+    await asLinuxHome('/home/alice', async () => {
+      // A signed-out desktop file is valid JSON with no token: the desktop
+      // probe returns undefined for it, which is what lets the CLI be reached.
+      const { store } = await cliStore(CN_VARIANT, {
+        'workbuddy-desktop.info': JSON.stringify({ auth: { refreshToken: 'stale' }, account: { uid: 'old' } }),
+        [CLI_AUTH_FILENAME]: cliDoc(),
+      })
+      await expect(store.current()).resolves.toMatchObject({ accessToken: 'cli-at' })
+    })
+  })
+
+  it('still fails loudly on a corrupt desktop file rather than papering over it with the CLI', async () => {
+    await asLinuxHome('/home/alice', async () => {
+      // The desktop file is the identity authority: a present-but-unreadable
+      // one is a diagnosis, not a reason to quietly use another sign-in.
+      const { store } = await cliStore(CN_VARIANT, {
+        'workbuddy-desktop.info': 'definitely not json',
+        [CLI_AUTH_FILENAME]: cliDoc(),
+      })
+      await expect(store.resolve()).rejects.toThrow(/exists but is unreadable/)
+    })
+  })
+
+  it('skips a CLI sign-in belonging to the other region instead of throwing', async () => {
+    await asLinuxHome('/home/alice', async () => {
+      // Coexistence, not misconfiguration: a CN CLI file must not break the
+      // international variant, and vice versa.
+      const cnCli = await cliStore(AI_VARIANT, {
+        [CLI_AUTH_FILENAME]: cliDoc({ domain: 'www.codebuddy.cn' }),
+      })
+      await expect(cnCli.store.status()).resolves.toMatchObject({ state: 'signed-out' })
+
+      const globalCli = await cliStore(CN_VARIANT, {
+        [CLI_AUTH_FILENAME]: cliDoc({ domain: 'www.workbuddy.ai' }),
+      })
+      await expect(globalCli.store.status()).resolves.toMatchObject({ state: 'signed-out' })
+    })
+  })
+
+  it('accepts a CLI sign-in of its own region for the international variant', async () => {
+    await asLinuxHome('/home/alice', async () => {
+      const { store } = await cliStore(AI_VARIANT, {
+        [CLI_AUTH_FILENAME]: cliDoc({ domain: 'www.workbuddy.ai' }),
+      })
+      await expect(store.status()).resolves.toMatchObject({ state: 'signed-in', domain: 'www.workbuddy.ai' })
+    })
+  })
+
+  it('skips a tokenless CLI file and keeps probing', async () => {
+    await asLinuxHome('/home/alice', async () => {
+      const { store } = await cliStore(CN_VARIANT, {
+        [CLI_AUTH_FILENAME]: JSON.stringify({ auth: { refreshToken: 'rt' }, account: { uid: 'x' } }),
+      })
+      await expect(store.status()).resolves.toMatchObject({ state: 'signed-out', reasonCode: 'no-credential' })
+    })
+  })
+
+  it('does not widen an explicit path into the CLI file', async () => {
+    await asLinuxHome('/home/alice', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'wb-cli-explicit-'))
+      CLEANUP.push(() => rm(root, { recursive: true, force: true }))
+      const authDir = join(root, 'CodeBuddyExtension', 'Data', 'Public', 'auth')
+      await mkdir(authDir, { recursive: true })
+      await writeFile(join(authDir, CLI_AUTH_FILENAME), cliDoc())
+      // An explicit pointer is used verbatim: naming a missing desktop file
+      // must not silently resolve to the CLI file beside it.
+      vi.stubEnv(CN_VARIANT.env, join(authDir, 'workbuddy-desktop.info'))
+      const store = new WorkBuddyCredentialStore({
+        variant: CN_VARIANT,
+        ownPath: join(root, 'own.json'),
+        refresh: async credential => ({ accessToken: credential.accessToken }),
+      })
+      await expect(store.status()).resolves.toMatchObject({ state: 'signed-out' })
+    })
+  })
+
+  it('names the CLI in the resolve() error when nothing is signed in', async () => {
+    await asLinuxHome('/home/alice', async () => {
+      const { store } = await cliStore(CN_VARIANT, {})
+      await expect(store.resolve()).rejects.toThrow(/CodeBuddy CLI/)
+    })
+  })
+
+  it('does not write a refreshed CLI credential back to the CLI file', async () => {
+    await asLinuxHome('/home/alice', async () => {
+      const { store, authDir } = await cliStore(CN_VARIANT, {
+        // Already expired, so resolve() refreshes it.
+        [CLI_AUTH_FILENAME]: cliDoc({ expiresAt: Date.now() - 1000 }),
+      })
+      const before = await readFile(join(authDir, CLI_AUTH_FILENAME), 'utf8')
+      await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'cli-at' })
+      // The CLI owns its file; the refreshed token goes to the plugin copy.
+      await expect(readFile(join(authDir, CLI_AUTH_FILENAME), 'utf8')).resolves.toBe(before)
     })
   })
 })
