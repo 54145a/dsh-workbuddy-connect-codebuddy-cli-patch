@@ -1,0 +1,20 @@
+# Merge policy for syncing upstream releases into this fork.
+#
+# This fork rewrote both READMEs into its own patch documentation (upstream's
+# original docs are linked from the top, not duplicated), so upstream's README
+# edits are intentionally not merged: declaring them as "ours" turns a conflict
+# into an automatic resolution.
+#
+# package.json is deliberately NOT listed. It is also edited here (scoped
+# package name), but `merge=ours` on it silently discards upstream's dependency
+# changes: a test merge produced zero conflicts while the version and the
+# @deepseek-ai peer range stayed at the old values, which would break loading on
+# the next DSH core line. It must be merged by hand — it is the one file where
+# upstream's changes matter and cannot be detected automatically.
+#
+# Requires `git config merge.ours.driver true` in each clone; the driver is a
+# built-in git convention but its definition lives in .git/config and does not
+# travel with the repository. Without it the attribute degrades to an ordinary
+# conflict rather than doing anything wrong.
+README.md merge=ours
+README.en.md merge=ours
