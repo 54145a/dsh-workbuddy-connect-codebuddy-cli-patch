@@ -161,3 +161,35 @@ describe('peer manifest pins the verified DSH cores', () => {
     expect(pkg.devDependencies['@earendil-works/pi-ai']).toBe('1.3.0')
   })
 })
+
+describe('package identity is consistent across the files a rename must touch', () => {
+  /**
+   * A rename has to land in four places that no compiler checks: package.json's
+   * name, the browser bundle's __ModuleLoader__ id (injected by tsdown.config),
+   * the Plugins-page dispatch key (BUNDLE_NAME), and the loader patch entry.
+   *
+   * Missing any one fails at runtime, not at build time. The scope rename
+   * shipped with the bundle id still bare and the plugin card could not load
+   * at all, so this pins all four to package.json as the single source.
+   */
+  it('matches package.json in the bundle id, the slot key, and the patch entry', async () => {
+    const pkg = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { name: string }
+
+    const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+    const patchNames = [...patch.matchAll(/^\s*name:\s*"?([^"\n]+?)"?\s*$/gmu)].map(match => match[1]!.trim())
+    expect(patchNames).toContain(pkg.name)
+
+    const buildConfig = readFileSync(new URL('../tsdown.config.ts', import.meta.url), 'utf8')
+    expect(buildConfig, 'tsdown.config.ts PLUGIN_ID must equal package.json name')
+      .toContain(`'${pkg.name}'`)
+
+    // Read the declaration as text: this spec lives under the server tsconfig,
+    // which does not enable JSX, so importing the .tsx module would not typecheck.
+    const clientEntry = readFileSync(new URL('../src/client/index.tsx', import.meta.url), 'utf8')
+    const bundleName = /export const BUNDLE_NAME = '([^']+)'/.exec(clientEntry)?.[1]
+    expect(bundleName, 'src/client/index.tsx declares no BUNDLE_NAME').toBeDefined()
+    expect(bundleName).toBe(pkg.name)
+  })
+})
