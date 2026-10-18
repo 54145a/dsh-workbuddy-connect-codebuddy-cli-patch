@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
 import { WorkBuddyCatalog } from '../src/catalog.ts'
+import { isFetchBlockedPort } from '../src/loopback.ts'
 import { createWorkBuddyShim, type WorkBuddyShim } from '../src/shim.ts'
 import type { WorkBuddyChatResult } from '../src/upstream.ts'
 
@@ -182,6 +183,20 @@ describe('WorkBuddy shim', () => {
   it('binds loopback only', async () => {
     const harness = await startShim(() => ({ ok: false, status: 500, kind: 'server', message: 'unused' }))
     expect(harness.shim.baseUrl()).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+  })
+
+  it('binds a port fetch will connect to', async () => {
+    // The OS picks the port, and fetch refuses a handful of the ports it can
+    // pick (10080 and friends). Landing on one leaves the shim listening but
+    // every pi-ai call failing with `TypeError: fetch failed`.
+    const harness = await startShim(() => ({ ok: false, status: 500, kind: 'server', message: 'unused' }))
+    const port = Number(new URL(harness.shim.baseUrl()).port)
+    expect(isFetchBlockedPort(port), `shim bound fetch-blocked port ${port}`).toBe(false)
+    // And prove it end to end: the same fetch that would have failed connects.
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/models`, {
+      headers: { authorization: `Bearer ${harness.shim.token()}` },
+    })
+    expect(response.status).toBe(200)
   })
 
   it('rejects a non-loopback Host header (DNS rebinding)', async () => {

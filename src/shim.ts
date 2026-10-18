@@ -20,7 +20,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { Readable } from 'node:stream'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
-import { hostIsLoopback, originIsLoopback } from './loopback.ts'
+import { bindToUsablePort, hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { extractDisplayErrorMessage, prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
 
 /** Minimal logger surface the plugin context already provides. */
@@ -133,12 +133,15 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     void handle(req, res)
   })
 
-  const ready = new Promise<void>((resolve, reject) => {
-    server.once('listening', () => resolve())
-    server.once('error', reject)
-  })
-
-  server.listen(0, '127.0.0.1')
+  // Bind an ephemeral port fetch will actually connect to: the OS can hand out
+  // one of the fetch standard's blocked ports, and every pi-ai call would then
+  // fail with `TypeError: fetch failed` against a listener that is otherwise up.
+  const ready: Promise<void> = bindToUsablePort(server, {
+    host: '127.0.0.1',
+    onBlockedPort: (port, attempt) => {
+      logger?.warn(`dsh-workbuddy-connect: port ${port} is blocked for fetch; rebinding (attempt ${attempt})`)
+    },
+  }).then(() => undefined)
 
   const baseUrl = (): string => {
     const address = server.address()
