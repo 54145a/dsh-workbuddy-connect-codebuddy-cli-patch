@@ -182,6 +182,10 @@ dsh plugin --profile web exec dsh-workbuddy-connect status --json
 - 真机（本机无 WorkBuddy 桌面 App，仅有 CodeBuddy CLI 登录）：装进真实 DSH Web profile 后，`GET /plugins/dsh-workbuddy-connect/status` 返回 `signed-in`、真实账号与 `catalog.source: live`；auth 目录下**只有** CLI 文件，无桌面文件、无插件自留副本 —— 该登录态只能来自 CLI。
 - 刷新链路：用 CLI 凭据走 WorkBuddy 的刷新端点成功换发新 access token，且**原始 CLI 文件字节级未被修改**（前后 sha256 一致）。
 
+## 参考实现
+
+- **[fu827707013/dsh-codebuddy-cli](https://github.com/fu827707013/dsh-codebuddy-cli)** —— CodeBuddy CLI 接入 DSH 的姊妹插件。本补丁的 CLI 兜底设计直接参照了它：CLI 凭据文件名 `Tencent-Cloud.coding-copilot.info`、共享 `CodeBuddyExtension/Data/Public/auth` 目录的发现顺序、以及其解析器与 workbuddy 同构的实现。没有这个项目，「CLI 登录态能否被 workbuddy-connect 复用」的可行性研究无从起步。
+
 ## 许可证
 
 同上游，[MIT](./LICENSE)。

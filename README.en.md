@@ -294,6 +294,10 @@ existing diagnostic semantics.
   through WorkBuddy's refresh endpoint, and the **original CLI file was left
   byte-identical** (matching sha256 before and after).
 
+## Reference implementation
+
+- **[fu827707013/dsh-codebuddy-cli](https://github.com/fu827707013/dsh-codebuddy-cli)** — the sibling plugin that connects the CodeBuddy CLI to DSH. This patch's CLI fallback design follows it directly: the credential filename `Tencent-Cloud.coding-copilot.info`, the probe order across the shared `CodeBuddyExtension/Data/Public/auth` directory, and its parser, which is structurally identical to workbuddy's. Without that project there would have been no starting point for establishing that a CLI sign-in could be reused by workbuddy-connect at all.
+
 ## License
 
 Same as upstream, [MIT](./LICENSE).
