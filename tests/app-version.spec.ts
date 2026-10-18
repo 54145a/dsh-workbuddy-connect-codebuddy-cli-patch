@@ -145,10 +145,17 @@ describe('resolveAppVersion', () => {
     CLEANUP.push(() => rm(root, { recursive: true, force: true }))
     const blocker = join(root, 'blocker')
     await writeFile(blocker, 'not a directory')
+    const blockedPath = join(blocker, 'version.json')
     await expect(resolveAppVersion({
       installed: async () => ({ version: '5.5.2', bundle: '/x' }),
-      path: join(blocker, 'version.json'),
+      path: blockedPath,
     })).resolves.toMatchObject({ version: '5.5.2', source: 'installed' })
+    // The line above passes with a writable path too — `source: 'installed'`
+    // does not depend on the write. Prove the failure path was actually taken:
+    // with the write refused, a later read finds no cache and falls back.
+    // A writable path would answer `saved` here.
+    await expect(resolveAppVersion({ installed: async () => undefined, path: blockedPath }))
+      .resolves.toMatchObject({ source: 'fallback' })
   })
 
   it('defaults its cache path under the DSH home', () => {

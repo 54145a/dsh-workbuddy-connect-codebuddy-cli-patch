@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -117,10 +117,16 @@ describe('WorkBuddyCatalogStore', () => {
     CLEANUP.push(dir)
     const blocker = join(dir, 'blocker')
     writeFileSync(blocker, 'not a directory')
-    const store = new WorkBuddyCatalogStore({ path: join(blocker, 'catalog.json') })
+    const blockedPath = join(blocker, 'catalog.json')
+    const store = new WorkBuddyCatalogStore({ path: blockedPath })
     // Saving is best-effort: the plugin has already served these models, and a
     // failed write must not surface as a crash.
     expect(() => store.set('uid-1:ent-1', { source: 's', fetchedAtMs: 1, models: [model('a')] })).not.toThrow()
+    // `set()` swallows write errors by design, so the line above also passes
+    // with a writable path. Assert the write really was refused: nothing
+    // reached the disk. (get() would not do: set() updates an in-memory cache
+    // first, so it answers from memory even when the write failed.)
+    expect(existsSync(blockedPath)).toBe(false)
   })
 
   it('defaults its path under the DSH home', () => {
