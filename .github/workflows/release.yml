@@ -1,0 +1,89 @@
+name: Publish Package
+
+# Publish @54145a/dsh-workbuddy-connect to the npm registry.
+#
+# Trigger: pushing a `v*` tag (or a manual dispatch). The upstream desktop repo
+# has no publish workflow at all — its only Actions job is a manually dispatched
+# diagnostics run, and its npm releases carry no provenance attestation, so they
+# are cut by hand. This workflow is ours.
+#
+# Everything runs through pnpm. Since pnpm 11 `publish` is implemented natively
+# (it no longer delegates to the npm CLI), and provenance needs pnpm >= 12, so
+# pinning that version is what lets one tool do the whole job. Mixing npm in for
+# the publish step would also sidestep pnpm's registry-credential rules by
+# accident rather than by design.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Needed by `pnpm publish --provenance`: npm uses this OIDC token to sign the
+  # build attestation. Registry authentication still comes from NPM_TOKEN —
+  # the two are independent.
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Publish to the real registry explicitly. A runner's own pnpm/npm config
+      # may point at a mirror, and publishing is the one operation where a
+      # wrong registry is not a performance question.
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+    steps:
+      - uses: actions/checkout@v4
+
+      # Must be >= 12: that is the first line whose `publish` supports
+      # --provenance. A newer version would also work; pinning keeps the
+      # release reproducible.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          # Writes an .npmrc to $RUNNER_TEMP (outside the repo) and exports
+          # NPM_CONFIG_USERCONFIG. That placement matters: pnpm refuses to expand
+          # ${NODE_AUTH_TOKEN} from a *project*-level .npmrc, because a
+          # repository-controlled file must not be able to read credentials.
+          registry-url: https://registry.npmjs.org
+
+      - name: install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Gate the publish on the same suite a human would run: typecheck, the
+      # full test suite, and the tsdown build that regenerates lib/. The build
+      # matters beyond correctness here — lib/ is committed, and prepack runs it
+      # again, so a broken build must fail before anything reaches npm.
+      - name: check
+        run: pnpm run check
+
+      # Refuse to publish a tag that disagrees with package.json: npm would
+      # reject a duplicate version anyway, but failing here names the real
+      # mistake instead of surfacing a confusing registry error.
+      - name: verify tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(pnpm pkg get version --silent | tr -d '"')"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json version $pkg_version" >&2
+            exit 1
+          fi
+
+      # --no-git-checks is required, not a shortcut: actions/checkout leaves a
+      # detached HEAD on a tag, and pnpm's default publish-branch check
+      # (master|main) needs an attached branch name, so the publish would fail
+      # with ERR_PNPM_GIT_UNKNOWN_BRANCH. Working-tree cleanliness is already
+      # enforced by the check step above, which leaves the tree clean.
+      - name: publish
+        run: pnpm publish --access public --provenance --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
