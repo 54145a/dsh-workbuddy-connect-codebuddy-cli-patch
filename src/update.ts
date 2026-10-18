@@ -15,8 +15,18 @@
  * @module dsh-workbuddy-connect/update
  */
 
-export const WORKBUDDY_REPOSITORY_URL = 'https://github.com/corrinehu/dsh-workbuddy-connect'
-export const WORKBUDDY_UPDATE_PACKAGE_NAME = 'dsh-workbuddy-connect'
+/**
+ * This fork's own repository and npm package, not upstream's.
+ *
+ * The update check asks npm for the dist-tags of the package it is *running
+ * as*. Pointing those at upstream would be worse than useless for a fork: the
+ * installed version is a prerelease of upstream's baseline (0.7.8-cli.1), so
+ * upstream's `latest` (0.7.8) compares as newer and the card would tell the user
+ * to "upgrade" — to the package without the CodeBuddy CLI support they
+ * installed this fork for.
+ */
+export const WORKBUDDY_REPOSITORY_URL = 'https://github.com/54145a/dsh-workbuddy-connect'
+export const WORKBUDDY_UPDATE_PACKAGE_NAME = '@54145a/dsh-workbuddy-connect'
 export const WORKBUDDY_UPDATE_NPM_METADATA_URL = `https://registry.npmjs.org/-/package/${WORKBUDDY_UPDATE_PACKAGE_NAME}/dist-tags`
 export const WORKBUDDY_UPDATE_RELEASES_API_URL = `${WORKBUDDY_REPOSITORY_URL.replace('https://github.com', 'https://api.github.com/repos')}/releases?per_page=100`
 export const WORKBUDDY_RELEASE_PAGE_BASE = `${WORKBUDDY_REPOSITORY_URL}/releases/tag/`

@@ -55,6 +55,10 @@ const CLI_SIGNIN_COPY = {
   introAI: 'Use the models in the WorkBuddy AI international desktop app or the CodeBuddy CLI directly in DSH — zero configuration, ready out of the box.',
   signedOutHint: 'Sign in once in the WorkBuddy desktop app (China edition) or the CodeBuddy CLI; this plugin follows that sign-in automatically.',
   signedOutHintAI: 'Sign in once in the WorkBuddy AI desktop app or the CodeBuddy CLI; this plugin follows that sign-in automatically.',
+  // The prompt a user copies into their agent when the update card fires. It
+  // names a package to install, so it has to name this fork's scoped package —
+  // the bare upstream name would send them to the build without CLI support.
+  agentUpgradePrompt: 'Please open {repository}, check its latest version, and install or update the plugin "@54145a/dsh-workbuddy-connect" in my current DSH profile following the project README (the install command differs by profile). After upgrading, fully quit and restart DSH.',
 } satisfies Partial<Record<WorkBuddySettingsKey, string>>
 
 /** The Chinese counterparts; keys must match {@link CLI_SIGNIN_COPY}. */
@@ -63,6 +67,7 @@ const CLI_SIGNIN_COPY_ZH = {
   introAI: '在 DSH 中直接使用 WorkBuddy AI 国际版桌面 App 或 CodeBuddy CLI 包含的模型，开箱即用，无需额外配置。',
   signedOutHint: '在 WorkBuddy 国内版桌面 App 或 CodeBuddy CLI 里登录一次即可，插件会自动跟随当前登录的账号。',
   signedOutHintAI: '在 WorkBuddy AI 国际版桌面 App 或 CodeBuddy CLI 里登录一次即可，插件会自动跟随当前登录的账号。',
+  agentUpgradePrompt: '请打开 {repository}，查看最新版本，并按项目 README 把插件 @54145a/dsh-workbuddy-connect 安装或更新到我当前使用的 DSH profile（不同 profile 的安装命令不同）。升级完成后请完全退出并重启 DSH。',
 } satisfies typeof CLI_SIGNIN_COPY
 
 /** Upstream copy with this fork's sign-in wording applied. */

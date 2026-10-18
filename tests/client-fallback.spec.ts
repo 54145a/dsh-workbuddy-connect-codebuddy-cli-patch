@@ -150,6 +150,10 @@ describe('client contribution isolation', () => {
       for (const key of ['intro', 'introAI', 'signedOutHint', 'signedOutHintAI']) {
         expect(copy![lang][key], `${lang}.${key}`).toContain('CodeBuddy CLI')
       }
+      // The agent prompt tells the user which package to install, so it must
+      // name this fork's scoped package rather than upstream's bare name.
+      expect(copy![lang]['agentUpgradePrompt'], `${lang}.agentUpgradePrompt`)
+        .toContain('@54145a/dsh-workbuddy-connect')
     }
     // Every other key still comes from upstream untouched.
     expect(copy!.en['title']).toBe('DSH WorkBuddy Connect (China)')
