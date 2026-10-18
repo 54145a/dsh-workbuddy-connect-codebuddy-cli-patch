@@ -39,6 +39,8 @@ interface Harness {
   enteredModelDirectories: () => boolean
   /** Captured console.error arguments, one entry per degraded contribution. */
   errors: unknown[][]
+  /** The copy handed to `locale.register`, or `undefined` if it never ran. */
+  registeredCopy: () => { zh: Record<string, string>, en: Record<string, string> } | undefined
 }
 
 /** Which slot registrations exist as declarations (callback fires at inject). */
@@ -61,6 +63,8 @@ function harness(options: {
   const registered: RecordedRegistration[] = []
   const errors: unknown[][] = []
   let enteredModelDirectories = false
+  /** The copy handed to `locale.register`, kept so the CLI wording can be asserted. */
+  let registeredCopy: { zh: Record<string, string>, en: Record<string, string> } | undefined
   vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args) })
 
   const slots: any = {
@@ -80,8 +84,9 @@ function harness(options: {
   const ctx: any = {
     effect: (fn: () => unknown) => { fn(); return () => {} },
     locale: {
-      register: () => {
+      register: (_namespace: string, copy: { zh: Record<string, string>, en: Record<string, string> }) => {
         if (options.failLocale === true) throw new Error('locale service is broken')
+        registeredCopy = copy
         return () => {}
       },
       bind: () => (key: string) => key,
@@ -102,6 +107,7 @@ function harness(options: {
     registered,
     enteredModelDirectories: () => enteredModelDirectories,
     errors,
+    registeredCopy: () => registeredCopy,
   }
 }
 
@@ -128,6 +134,26 @@ describe('client contribution isolation', () => {
     ])
     expect(h.enteredModelDirectories()).toBe(true)
     expect(h.errors).toHaveLength(0)
+  })
+
+  it('registers copy that names the CodeBuddy CLI as a sign-in source', () => {
+    // This fork accepts a CodeBuddy CLI sign-in, so the card copy must not send
+    // a CLI-only user to a desktop app they may not have installed. The wording
+    // is injected at registration rather than edited into locales.ts, which
+    // keeps that file identical to upstream (upstream rewrites these same keys,
+    // so editing them in place would make every release a manual merge).
+    const h = harness()
+    apply(h.ctx)
+    const copy = h.registeredCopy()
+    expect(copy).toBeDefined()
+    for (const lang of ['en', 'zh'] as const) {
+      for (const key of ['intro', 'introAI', 'signedOutHint', 'signedOutHintAI']) {
+        expect(copy![lang][key], `${lang}.${key}`).toContain('CodeBuddy CLI')
+      }
+    }
+    // Every other key still comes from upstream untouched.
+    expect(copy!.en['title']).toBe('DSH WorkBuddy Connect (China)')
+    expect(copy!.zh['signedOut']).toBe('未登录')
   })
 
   it('keeps the second card and both other seams when the first card registration throws', () => {

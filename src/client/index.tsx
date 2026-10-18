@@ -36,6 +36,39 @@ import type { WorkBuddyPluginCardInjected } from './WorkBuddyPluginCard.tsx'
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
+/**
+ * Copy this fork overrides, because upstream's wording names only the desktop
+ * app as a sign-in source while this fork also accepts the CodeBuddy CLI.
+ *
+ * Overriding here rather than editing `locales.ts` keeps that file byte-identical
+ * to upstream, which matters for syncing: upstream rewrites these very keys
+ * (`intro` and `signedOutHint` changed in v0.7.8), so editing them in place makes
+ * every upstream release a manual merge. `src/client/index.tsx`, by contrast, was
+ * untouched across the last four upstream releases, and the copy is injected at
+ * registration, so an override belongs here.
+ *
+ * `signedOutHint` is the load-bearing one: without it a CLI user who is not
+ * signed in is told to sign in to a desktop app they may not have installed.
+ */
+const CLI_SIGNIN_COPY = {
+  intro: 'Use the models in the WorkBuddy desktop app (China edition) or the CodeBuddy CLI directly in DSH — zero configuration, ready out of the box.',
+  introAI: 'Use the models in the WorkBuddy AI international desktop app or the CodeBuddy CLI directly in DSH — zero configuration, ready out of the box.',
+  signedOutHint: 'Sign in once in the WorkBuddy desktop app (China edition) or the CodeBuddy CLI; this plugin follows that sign-in automatically.',
+  signedOutHintAI: 'Sign in once in the WorkBuddy AI desktop app or the CodeBuddy CLI; this plugin follows that sign-in automatically.',
+} satisfies Partial<Record<WorkBuddySettingsKey, string>>
+
+/** The Chinese counterparts; keys must match {@link CLI_SIGNIN_COPY}. */
+const CLI_SIGNIN_COPY_ZH = {
+  intro: '在 DSH 中直接使用 WorkBuddy 国内版桌面 App 或 CodeBuddy CLI 包含的模型，开箱即用，无需额外配置。',
+  introAI: '在 DSH 中直接使用 WorkBuddy AI 国际版桌面 App 或 CodeBuddy CLI 包含的模型，开箱即用，无需额外配置。',
+  signedOutHint: '在 WorkBuddy 国内版桌面 App 或 CodeBuddy CLI 里登录一次即可，插件会自动跟随当前登录的账号。',
+  signedOutHintAI: '在 WorkBuddy AI 国际版桌面 App 或 CodeBuddy CLI 里登录一次即可，插件会自动跟随当前登录的账号。',
+} satisfies typeof CLI_SIGNIN_COPY
+
+/** Upstream copy with this fork's sign-in wording applied. */
+const enWithCli = { ...en, ...CLI_SIGNIN_COPY }
+const zhWithCli = { ...zh, ...CLI_SIGNIN_COPY_ZH }
+
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     /** WorkBuddy plugin card copy. */
@@ -177,7 +210,7 @@ export function apply(ctx: ClientContext): void {
   // degrades, `t` still binds and renders the key names as fallback copy.
   const namespace = 'settings.workbuddy'
   guardClientContribution('settings copy', () => {
-    ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-workbuddy-connect: settings copy')
+    ctx.effect(() => ctx.locale.register(namespace, { zh: zhWithCli, en: enWithCli }), 'dsh-workbuddy-connect: settings copy')
   })
   const t = ctx.locale.bind(namespace) as WorkBuddyPluginCardInjected['t']
   // The update reminder: one store for the whole bundle (the check compares
