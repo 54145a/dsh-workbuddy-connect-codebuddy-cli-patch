@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH, isWorkBuddySignedOutReasonCode } from '../status-paths.ts'
-import type { WorkBuddyWebCreditExpiry } from '../status-paths.ts'
+import type { WorkBuddyWebCreditAccount, WorkBuddyWebCreditExpiry } from '../status-paths.ts'
 import type { WorkBuddySignedOutReasonCode, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from '../status-paths.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
@@ -481,6 +481,28 @@ function ExpiryNotice({ expiry, t }: {
         : <span style={noticeDetailStyle}>{t('expiryExpiresAt', { time: formatTime(soonest) })}</span>}
     </div>
   )
+}
+
+/** Combine same-name packages for display; expiry data stays per package upstream. */
+function groupCreditPackages(accounts: readonly WorkBuddyWebCreditAccount[]): WorkBuddyWebCreditAccount[] {
+  const groups = new Map<string, WorkBuddyWebCreditAccount>()
+  for (const account of accounts) {
+    const group = groups.get(account.packageName)
+    if (group === undefined) {
+      groups.set(account.packageName, {
+        packageName: account.packageName,
+        remain: account.remain,
+        size: account.size,
+        ...account.unlimited === true ? { unlimited: true } : {},
+      })
+    } else {
+      group.remain += account.remain
+      // One unknown allowance makes the combined percentage unknown too.
+      group.size = group.size > 0 && account.size > 0 ? group.size + account.size : 0
+      if (account.unlimited === true) group.unlimited = true
+    }
+  }
+  return [...groups.values()]
 }
 
 /**
@@ -1393,11 +1415,11 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                       {status.credits === undefined ? null : (
                         <div style={quotaListStyle}>
                           <h3 style={quotaTitleStyle}>{t('creditsDetailHeading')}</h3>
-                          {status.credits.accounts
+                          {groupCreditPackages(status.credits.accounts)
                             .filter(account => account.packageName === 'enterprise' || account.remain > 0 || account.unlimited === true)
-                            .map((account, index) => (
+                            .map(account => (
                             <CreditBar
-                              key={`${account.packageName}-${String(index)}`}
+                              key={account.packageName}
                               label={account.packageName === 'enterprise' ? t('packageEnterprise') : account.packageName}
                               remain={account.remain}
                               size={account.size}

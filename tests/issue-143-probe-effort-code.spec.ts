@@ -141,6 +141,9 @@ function sweep(credential: WorkBuddyCredential, region: 'cn' | 'global') {
     region,
     sentinel: () => 'probe_sentinel_test',
     send: (effort, signal) => upstream.probeEffort(credential, MODEL, effort, signal),
+    // The production gap spares the upstream's quota; these assertions do not
+    // depend on it, and sleeping through it would only slow the suite.
+    attemptGapMs: 0,
   })
 }
 

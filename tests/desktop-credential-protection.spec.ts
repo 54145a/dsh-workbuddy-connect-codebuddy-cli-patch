@@ -17,6 +17,11 @@ import {
 } from '../src/desktop-credential-protection.ts'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
 import { AI_VARIANT, CN_VARIANT, electronProfileFor, type WorkBuddyVariant } from '../src/variants.ts'
+import { isolateProductEnv } from './helpers/product-env.ts'
+
+// The provider reads a product's env var before any injected seam, so a host
+// that exports one would change these expectations. Absent, not blank.
+isolateProductEnv()
 
 /**
  * Issue #39/#40: WorkBuddy 5.6 seals the desktop auth file's token fields in

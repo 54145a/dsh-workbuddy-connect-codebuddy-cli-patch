@@ -10,7 +10,7 @@ import { createProvider } from '@earendil-works/pi-ai'
 import type { Api, AuthContext, CredentialStore, Model, ModelThinkingLevel, Provider, ThinkingLevelMap } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
-import type { LlmModelInfo, LlmResolvedModelInfo } from '@deepseek-ai/dsh-llm'
+import type { LlmModelInfo, LlmResolvedModelInfo, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { PiAiAdapterOptions, ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
@@ -166,6 +166,15 @@ export interface WorkBuddyAdapterOptions {
    * `'cn'`, the same legacy default `providerId` carries.
    */
   region?: WorkBuddyRegion
+  /**
+   * Retry policy this route serves, resolved by the caller from its plugin
+   * config. An adapter cannot read plugin config, and the value it would
+   * otherwise capture — normal mode, 5 retries, 500 ms → 10 s backoff — is too
+   * short to outlast WorkBuddy's multi-minute upstream outages, which surface
+   * as `TypeError: fetch failed` once the budget runs out. Omission keeps
+   * those defaults, so an unconfigured user is unaffected.
+   */
+  retryPolicy?: ResolvedRetryPolicy
   shim: WorkBuddyShim
   store: WorkBuddyCredentialStore
   catalog: WorkBuddyCatalog
@@ -363,7 +372,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     provider: providerId,
     displayName,
     streamIdleTimeoutMs: WORKBUDDY_STREAM_IDLE_TIMEOUT_MS,
-    retryPolicy: resolveRetryPolicy(undefined, 'dsh-workbuddy-connect retryPolicy'),
+    retryPolicy: options.retryPolicy ?? resolveRetryPolicy(undefined, 'dsh-workbuddy-connect retryPolicy'),
     configuredMaxTokens: new Map(),
     // Required since 0.1.5-alpha.2; the live catalog only exposes models that
     // probed successfully, so there is never a per-model failure to report.

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
+import { resolveImageAttachmentAccess, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { createWorkBuddyAdapter } from '../src/adapter.ts'
 import type { WorkBuddyAdapterOptions } from '../src/adapter.ts'
 import { WorkBuddyCatalog } from '../src/catalog.ts'
@@ -455,5 +455,49 @@ describe('request-image contract across host generations', () => {
       { maxPixels: 999 },
     )
     expect(observed).toMatchObject({ maxPixels: 999 })
+  })
+})
+
+describe('WorkBuddy adapter retry policy', () => {
+  /** The minimum options every adapter here shares; the policy is what varies. */
+  function baseOptions(): WorkBuddyAdapterOptions {
+    return {
+      catalog: new WorkBuddyCatalog([{
+        id: 'model', name: 'Model', contextWindow: 1_000, maxTokens: 8_000,
+        supportsImages: false, billing: { free: false },
+      }]),
+      store: {} as WorkBuddyCredentialStore,
+      shim: {
+        ready: Promise.resolve(),
+        baseUrl: () => 'http://127.0.0.1:1',
+        token: () => 'test-token',
+        close: async () => {},
+      } as WorkBuddyShim,
+    }
+  }
+
+  it('serves the resolved policy its plugin config handed it', () => {
+    // WorkBuddy's upstream can drop every request for minutes; the default
+    // budget (5 retries ≈ 15.5 s of scheduled backoff, before per-request
+    // time) exhausts inside such a window and the turn fails with a transport
+    // error. The plugin config is where that budget is raised, so the adapter
+    // must serve exactly what it resolved.
+    const policy = resolveRetryPolicy({
+      mode: 'normal',
+      maxRetries: 15,
+      backoff: { initialDelayMs: 2_000, maxDelayMs: 30_000 },
+    }, 'dsh-workbuddy-connect retryPolicy')
+    const { adapter } = createWorkBuddyAdapter({ ...baseOptions(), retryPolicy: policy })
+    expect(adapter.providerRetryPolicy(WORKBUDDY_PROVIDER)).toEqual(policy)
+  })
+
+  it('keeps the dsh-llm default when no policy is configured', () => {
+    const { adapter } = createWorkBuddyAdapter(baseOptions())
+    expect(adapter.providerRetryPolicy(WORKBUDDY_PROVIDER)).toMatchObject({
+      mode: 'normal',
+      maxRetries: 5,
+      initialDelayMs: 500,
+      maxDelayMs: 10_000,
+    })
   })
 })

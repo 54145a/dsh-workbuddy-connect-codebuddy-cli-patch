@@ -41,6 +41,35 @@ export const PROBE_MAX_TOKENS = 1
 /** Per-request ceiling so one hung probe cannot stall the queue. */
 export const PROBE_REQUEST_TIMEOUT_MS = 30_000
 
+/**
+ * Backoff before each retry of the *same* attempt. The length is the retry
+ * budget: an answer that is still retryable after the last delay is reported as
+ * it stands, so a busy upstream degrades to `unknown` exactly as before.
+ *
+ * 429 is the one status worth retrying. The upstream answers it in 0.3–3s with
+ * a complete JSON body (`14003`, `too many requests`) — an application-level
+ * quota, not a network fault — and the quota is per model over a short window,
+ * so waiting it out is the only way to observe the sweep (issue #182).
+ */
+export const PROBE_RETRY_DELAYS_MS: readonly number[] = [4_000, 8_000, 16_000]
+
+/**
+ * Gap between two *different* attempts. A validating model needs the longest
+ * sweep (baseline + sentinel + one per candidate), and firing it back to back is
+ * what fills the short window in the first place: the measured failure drifted
+ * between baseline, sentinel and the levels rather than pinning one stage, which
+ * is a throttling signature and not a per-parameter rejection.
+ */
+export const PROBE_ATTEMPT_GAP_MS = 1_500
+
+/**
+ * Ceiling for a whole sweep, retries and request time included, as elapsed wall
+ * clock. Without it the worst case is seven attempts each burning the full retry
+ * budget plus their own 30s timeout, which is far longer than a user will wait on
+ * a card that says "detecting".
+ */
+export const PROBE_TOTAL_BUDGET_MS = 180_000
+
 /** Sentinel generator; injectable so tests get deterministic values. */
 export type SentinelFactory = () => string
 
@@ -115,6 +144,15 @@ const INVALID_EFFORT_CODES: Record<ProbeRegion, ReadonlySet<string>> = {
   global: new Set(['invalid_reasoning_effort', 'model_param_invalid', 'invalid_parameter_value']),
 }
 
+/**
+ * Whether an attempt may be repeated unchanged: the upstream is busy, not
+ * answering the question. Only 429 qualifies — every other status is either a
+ * verdict about the effort value or a failure retrying cannot fix.
+ */
+function isRetryable(attempt: ProbeAttempt): boolean {
+  return attempt.status === 429
+}
+
 /** Whether an attempt is an attributable rejection of the effort value. */
 function isEffortRejection(attempt: ProbeAttempt, region: ProbeRegion): boolean {
   const codes = INVALID_EFFORT_CODES[region]
@@ -147,17 +185,41 @@ export async function probeModel(options: {
   candidates?: readonly WorkBuddyEffort[]
   timeoutMs?: number
   region?: ProbeRegion
+  /** Zeroed by tests; production uses {@link PROBE_RETRY_DELAYS_MS}. */
+  retryDelaysMs?: readonly number[]
+  /** Zeroed by tests; production uses {@link PROBE_ATTEMPT_GAP_MS}. */
+  attemptGapMs?: number
+  /** Zeroed by tests; production uses {@link PROBE_TOTAL_BUDGET_MS}. */
+  totalBudgetMs?: number
+  /** Injected by tests to keep the suite instant; defaults to `setTimeout`. */
+  wait?: (ms: number) => Promise<void>
+  /** Injected by tests to advance a virtual clock; defaults to `Date.now`. */
+  now?: () => number
 }): Promise<ProbeOutcome> {
   const sentinel = options.sentinel ?? randomSentinel
   const candidates = options.candidates ?? PROBE_EFFORT_CANDIDATES
   const timeoutMs = options.timeoutMs ?? PROBE_REQUEST_TIMEOUT_MS
   const region = options.region ?? 'cn'
+  const retryDelays = options.retryDelaysMs ?? PROBE_RETRY_DELAYS_MS
+  const attemptGapMs = options.attemptGapMs ?? PROBE_ATTEMPT_GAP_MS
+  const totalBudgetMs = options.totalBudgetMs ?? PROBE_TOTAL_BUDGET_MS
+  const wait = options.wait ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  const now = options.now ?? Date.now
   let requests = 0
 
-  const attempt = async (effort: string | undefined): Promise<ProbeAttempt> => {
+  // The budget is wall clock, not sleep time: a sweep that spends its 180s in
+  // seven 30s timeouts is over just as much as one that spends it waiting.
+  const deadline = now() + totalBudgetMs
+  const remaining = (): number => deadline - now()
+  const exhausted: ProbeAttempt = { status: 0, streamed: false, detail: 'probe budget exhausted' }
+
+  const once = async (effort: string | undefined): Promise<ProbeAttempt> => {
+    const budget = remaining()
+    // No request may start past the deadline, and none may outlive it either.
+    if (budget <= 0) return exhausted
     requests += 1
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, budget))
     try {
       return await options.send(effort, controller.signal)
     } catch (error: unknown) {
@@ -165,6 +227,32 @@ export async function probeModel(options: {
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  /**
+   * One attempt, retried while the upstream reports it is busy. Throttling and
+   * retrying are what make the sweep observable at all: a model that needs the
+   * longest scan is usually the one whose quota a back-to-back scan exhausts
+   * (issue #182). A budget that runs out keeps the answer it already has, so
+   * this can only ever add time — never turn a rejection into an acceptance.
+   */
+  const attempt = async (effort: string | undefined): Promise<ProbeAttempt> => {
+    if (attemptGapMs > 0 && requests > 0) {
+      // A gap that no longer fits means the sweep is over, not that the gap is
+      // free: firing the request anyway is what let the budget be overrun.
+      if (attemptGapMs > remaining()) return exhausted
+      await wait(attemptGapMs)
+    }
+    let result = await once(effort)
+    for (const delay of retryDelays) {
+      // Out of budget: keep the answer already collected rather than replacing
+      // a real upstream reply with a clock reading.
+      if (!isRetryable(result) || delay > remaining()) return result
+      await wait(delay)
+      if (remaining() <= 0) return result
+      result = await once(effort)
+    }
+    return result
   }
 
   // 1. Baseline: proves the request path itself is sound. Without this a 400

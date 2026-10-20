@@ -20,6 +20,66 @@ interface Harness {
   store: WorkBuddyCredentialStore
   upstreamBodies: string[]
   upstreamResponse: () => WorkBuddyChatResult
+  /** The signal the shim handed to the upstream call, once it has made one. */
+  upstreamSignal: () => AbortSignal | undefined
+  /** Every signal handed upstream, in call order. */
+  upstreamSignals: AbortSignal[]
+}
+
+/**
+ * An upstream SSE body that stays open until the test releases it.
+ *
+ * Cancellation is only observable while the stream is still live: a body that
+ * ended immediately would let the response finish for its own reasons, and the
+ * assertion could no longer tell "the client hung up" from "the stream was
+ * simply over".
+ */
+function openStream(): { response: Response, release: () => void } {
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined
+  let dead = false
+  const encoder = new TextEncoder()
+  const response = new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controllerRef = controller
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'))
+    },
+  }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+  return {
+    response,
+    release: () => {
+      if (dead) return
+      dead = true
+      try {
+        controllerRef?.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controllerRef?.close()
+      } catch { /* already closed or aborted */ }
+    },
+  }
+}
+
+/**
+ * Poll until `predicate` holds, or fail after a bounded wait.
+ *
+ * A disconnect is observed by the HTTP layer asynchronously, so the abort is
+ * never synchronously visible to the test that destroyed the socket.
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+}
+
+/** A finite SSE body that completes on its own, for the non-cancel path. */
+function finishingStream(): Response {
+  const encoder = new TextEncoder()
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'))
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+      controller.close()
+    },
+  }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
 }
 
 /** Raw HTTP request with full header control (fetch forbids overriding Host). */
@@ -69,13 +129,18 @@ async function startShim(upstreamResponse: () => WorkBuddyChatResult): Promise<H
     store,
     upstreamBodies: [],
     upstreamResponse,
+    upstreamSignal: () => signal,
+    upstreamSignals: [],
   }
+  let signal: AbortSignal | undefined
   harness.shim = createWorkBuddyShim({
     store,
     catalog: new WorkBuddyCatalog(),
     client: {
-      async chatStream(_credential, bodyJson): Promise<WorkBuddyChatResult> {
+      async chatStream(_credential, bodyJson, abortSignal): Promise<WorkBuddyChatResult> {
         harness.upstreamBodies.push(bodyJson)
+        signal = abortSignal
+        if (abortSignal !== undefined) harness.upstreamSignals.push(abortSignal)
         return harness.upstreamResponse()
       },
     },
@@ -170,6 +235,92 @@ describe('WorkBuddy shim', () => {
     const body = await response.json() as { error: { type: string, message: string } }
     expect(body.error.type).toBe('hard_credit')
     expect(body.error.message).toContain('积分不足')
+  })
+
+  it('aborts the upstream call when the client hangs up mid-stream', async () => {
+    // A user pressing Stop must cancel the *upstream* request, not merely stop
+    // reading its output: the upstream bills for a generation nobody will see.
+    //
+    // Regression guard for the listener ordering. `IncomingMessage#close` fires
+    // when the *request body* has been consumed, which has already happened by
+    // the time the handler awaits the body — so a listener attached to `req`
+    // afterwards never fires and the abort never happens. The body here never
+    // completes on its own, so the signal can only abort if the disconnect is
+    // genuinely observed.
+    const stream = openStream()
+    const harness = await startShim(() => ({ ok: true, response: stream.response }))
+    const port = Number(new URL(harness.shim.baseUrl()).port)
+
+    // Hand-rolled request: the socket must be destroyed mid-stream, which
+    // `fetch` does not allow.
+    const hungUp = new Promise<void>((resolve) => {
+      const req = request({
+        host: '127.0.0.1',
+        port,
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: {
+          'Content-Type': 'application/json',
+          authorization: `Bearer ${harness.shim.token()}`,
+        },
+      }, (res) => {
+        res.once('data', () => {
+          req.destroy()
+          resolve()
+        })
+      })
+      req.on('error', () => {})
+      req.end(JSON.stringify({ model: 'hy3', messages: [{ role: 'user', content: 'hi' }] }))
+    })
+    await hungUp
+    await waitFor(() => harness.upstreamSignals.some(signal => signal.aborted))
+    stream.release()
+
+    expect(harness.upstreamSignals).toHaveLength(1)
+    expect(harness.upstreamSignals[0]?.aborted).toBe(true)
+  })
+
+  it('leaves the upstream signal untouched when the stream completes normally', async () => {
+    // The mirror image of the test above, and the regression this fix could
+    // introduce: `res`'s `close` also fires on ordinary completion. Aborting
+    // there would cancel a request that already succeeded — the client would
+    // keep its bytes, but any work tied to the signal would be torn down. The
+    // guard is `!res.writableEnded`, which this pins.
+    const harness = await startShim(() => ({ ok: true, response: finishingStream() }))
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
+      body: JSON.stringify({ model: 'hy3', messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    const text = await response.text()
+    // Give the server a turn to run any post-completion `close` handling.
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(response.status).toBe(200)
+    expect(text).toContain('[DONE]')
+    expect(harness.upstreamSignals).toHaveLength(1)
+    expect(harness.upstreamSignals[0]?.aborted).toBe(false)
+  })
+
+  it('does not abort an upstream error response that was already written', async () => {
+    // The other non-cancel path: an upstream failure is answered in full by
+    // `writeOpenAIError`, and its `end()` must not be mistaken for a hang-up.
+    const harness = await startShim(() => ({
+      ok: false,
+      status: 402,
+      kind: 'hard_credit',
+      message: '积分不足',
+    }))
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
+      body: JSON.stringify({ model: 'hy3', messages: [] }),
+    })
+    await response.json()
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(response.status).toBe(402)
+    expect(harness.upstreamSignals[0]?.aborted).toBe(false)
   })
 
   it('answers unknown routes with 404', async () => {

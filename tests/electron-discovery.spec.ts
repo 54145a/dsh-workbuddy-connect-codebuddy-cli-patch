@@ -13,6 +13,7 @@ import {
 import type { WorkBuddyDiscoveryTools } from '../src/desktop-credential-protection.ts'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
 import { CN_VARIANT, AI_VARIANT , electronProfileFor} from '../src/variants.ts'
+import { isolateProductEnv } from './helpers/product-env.ts'
 
 /**
  * Issue #48: the macOS Electron binary is no longer assumed to live at
@@ -68,6 +69,10 @@ function counting<T extends (...args: never[]) => unknown>(fn: T, calls: string[
 
 let root: string
 const cleanups: (() => Promise<void>)[] = []
+
+// A machine that already exports one of the product variables would otherwise
+// pre-empt discovery for that product and fail these tests on that box only.
+isolateProductEnv()
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'wb-electron-discovery-'))

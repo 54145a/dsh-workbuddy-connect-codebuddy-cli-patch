@@ -1,13 +1,49 @@
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Context } from '@deepseek-ai/cordis'
+import { Context, Service, resolveConfig } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
+import SettingsForms, { type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm/brand'
+import z from '@deepseek-ai/schemastery'
 import * as WorkBuddy from '../src/index.ts'
+import { resolveModernSettingsEntryId } from '../src/legacy-settings.ts'
 import { LegacySettingsService } from './helpers/legacy-settings.ts'
+import { ModernSettingsForms } from './helpers/modern-settings.ts'
+
+/**
+ * Stands in for the Host's webServer service so the plugin's status and probe
+ * routes are callable over loopback HTTP in integration tests.
+ */
+class FakeWebServer extends Service {
+  static current: FakeWebServer | undefined
+  readonly routes = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
+
+  constructor(ctx: Context) {
+    super(ctx, 'webServer')
+    FakeWebServer.current = this
+  }
+
+  register(route: { kind: string; path: string; handler: (req: IncomingMessage, res: ServerResponse) => Promise<void> }): () => void {
+    this.routes.set(route.path, route.handler)
+    return () => { this.routes.delete(route.path) }
+  }
+}
+
+/** Serve captured routes over ephemeral HTTP. */
+async function serve(routes: Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>): Promise<{ port: number; close: () => Promise<void> }> {
+  const server = createServer((req, res) => {
+    const handler = routes.get(new URL(req.url ?? '/', 'http://127.0.0.1').pathname)
+    if (handler === undefined) { res.writeHead(404).end('{}'); return }
+    void handler(req, res)
+  })
+  await new Promise<void>(resolve => { server.listen(0, '127.0.0.1', resolve) })
+  const port = (server.address() as { port: number }).port
+  return { port, close: () => new Promise<void>(resolve => { server.close(() => resolve()) }) }
+}
 
 /**
  * In-memory legacy settings: the 0.1.5/0.1.6 section API this plugin drives.
@@ -37,6 +73,7 @@ function credentialDocument(domain: string): string {
 }
 
 afterEach(async () => {
+  vi.useRealTimers()
   await context?.fiber.dispose()
   context = undefined
   if (root !== undefined) {
@@ -695,5 +732,536 @@ describe('WorkBuddy Host settings integration', () => {
     expect(text).not.toContain('Normalized copy (read-only;')
     expect(text).not.toContain(hostPath)
     expect(JSON.stringify(body)).toContain('data:image/png;base64,AQID')
+  })
+
+  it('adapts to modern DSH 0.2.x SettingsForms service: toggles preference, persists to target entry, reports failure accurately, and restores after reload', async () => {
+    root = await mkdtemp(join(tmpdir(), 'workbuddy-modern-settings-'))
+    const aiFile = join(root, 'ai.info')
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
+    vi.stubEnv('DSH_HOME', root)
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
+    vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).startsWith('http://127.0.0.1')) return realFetch(url, init)
+      throw new Error('offline in tests')
+    }))
+
+    const forms = new ModernSettingsForms({
+      entries: [{
+        ns: 'dsh-workbuddy-connect',
+        schema: WorkBuddy.Config,
+        value: { useMaximumContextWindow: true },
+      }],
+    })
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    ctx.provide('settings', forms as never)
+    await ctx.plugin(FakeWebServer)
+    await ctx.plugin(WorkBuddy, {})
+
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
+    })
+
+    const routes = FakeWebServer.current!.routes
+    expect(routes.has('/plugins/dsh-workbuddy-connect/ai/status')).toBe(true)
+    expect(routes.has('/plugins/dsh-workbuddy-connect/ai/probe')).toBe(true)
+
+    const server = await serve(routes)
+    try {
+      const getStatus = async () => {
+        const res = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/status`, {
+          headers: { host: `127.0.0.1:${server.port}` },
+        })
+        return res.json() as Promise<Record<string, unknown>>
+      }
+      const postProbe = async (key: string, body: unknown) => {
+        const res = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/probe`, {
+          method: 'POST',
+          headers: {
+            host: `127.0.0.1:${server.port}`,
+            'content-type': 'application/json',
+            'x-workbuddy-probe-key': key,
+          },
+          body: JSON.stringify(body),
+        })
+        return { status: res.status, body: await res.json() as Record<string, unknown> }
+      }
+
+      // Initial state: 1M context window and status reflects true with probe key
+      const initialStatus = await getStatus()
+      expect(initialStatus['useMaximumContextWindow']).toBe(true)
+      const probeKey = initialStatus['probeKey'] as string
+      expect(probeKey).toBeDefined()
+
+      const flashBefore = await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')
+      expect(flashBefore.context?.contextWindow).toBe(1_000_000)
+
+      // 1. Toggle through the route: disable maximum context window
+      const toggled = await postProbe(probeKey, { action: 'set-maximum-context-window', enabled: false })
+      expect(toggled.status).toBe(200)
+      expect(toggled.body).toEqual({ state: 'updated' })
+
+      // Target entry and saved value are verified
+      expect(forms.writes).toHaveLength(1)
+      expect(forms.writes[0]).toEqual({
+        ns: 'dsh-workbuddy-connect',
+        patch: { useMaximumContextWindow: false },
+        expectedRevision: undefined,
+      })
+      expect(forms.stored('dsh-workbuddy-connect')).toMatchObject({ useMaximumContextWindow: false })
+
+      // Live catalog context window reflects 300K immediately without restart
+      const flashAfter = await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')
+      expect(flashAfter.context?.contextWindow).toBe(300_000)
+
+      const statusAfterToggle = await getStatus()
+      expect(statusAfterToggle['useMaximumContextWindow']).toBe(false)
+
+      // 2. Persistence failure: report failure accurately and keep runtime/persisted state consistent
+      forms.failNext('disk quota exceeded')
+      const failed = await postProbe(probeKey, { action: 'set-maximum-context-window', enabled: true })
+      expect(failed.status).toBe(200)
+      expect(failed.body).toMatchObject({
+        state: 'failed',
+        reason: expect.stringContaining('disk quota exceeded'),
+      })
+
+      // Runtime context window remains 300K (NOT mutated on persistence failure)
+      const flashAfterFailure = await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')
+      expect(flashAfterFailure.context?.contextWindow).toBe(300_000)
+
+      // Status document still accurately reports false
+      const statusAfterFailure = await getStatus()
+      expect(statusAfterFailure['useMaximumContextWindow']).toBe(false)
+
+      // Stored value remains false
+      expect(forms.stored('dsh-workbuddy-connect')).toMatchObject({ useMaximumContextWindow: false })
+    } finally {
+      await server.close()
+    }
+
+    // 3. Restoring the preference after reload
+    await context?.fiber.dispose()
+    context = undefined
+
+    const reloadCtx = new Context()
+    context = reloadCtx
+    await reloadCtx.plugin(LlmRuntime)
+    reloadCtx.provide('settings', forms as never)
+    await reloadCtx.plugin(FakeWebServer)
+    await reloadCtx.plugin(WorkBuddy, {})
+
+    await vi.waitFor(async () => {
+      expect((await reloadCtx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
+    })
+
+    const reloadServer = await serve(FakeWebServer.current!.routes)
+    try {
+      const reloadStatusRes = await fetch(`http://127.0.0.1:${reloadServer.port}/plugins/dsh-workbuddy-connect/ai/status`, {
+        headers: { host: `127.0.0.1:${reloadServer.port}` },
+      })
+      const reloadStatus = await reloadStatusRes.json() as Record<string, unknown>
+      expect(reloadStatus['useMaximumContextWindow']).toBe(false)
+
+      const flashReload = await reloadCtx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')
+      expect(flashReload.context?.contextWindow).toBe(300_000)
+    } finally {
+      await reloadServer.close()
+    }
+  })
+
+  it('refuses to persist or mutate an unrelated entry that happens to declare a useMaximumContextWindow field', async () => {
+    root = await mkdtemp(join(tmpdir(), 'workbuddy-unrelated-settings-'))
+    const aiFile = join(root, 'ai.info')
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
+    vi.stubEnv('DSH_HOME', root)
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
+    vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).startsWith('http://127.0.0.1')) return realFetch(url, init)
+      throw new Error('offline in tests')
+    }))
+
+    const forms = new ModernSettingsForms({
+      entries: [{
+        ns: 'unrelated-plugin',
+        schema: z.object({ useMaximumContextWindow: z.boolean() }),
+        value: { useMaximumContextWindow: true },
+      }],
+    })
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    ctx.provide('settings', forms as never)
+    await ctx.plugin(FakeWebServer)
+    await ctx.plugin(WorkBuddy, {})
+
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
+    })
+
+    const server = await serve(FakeWebServer.current!.routes)
+    try {
+      const statusRes = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/status`, {
+        headers: { host: `127.0.0.1:${server.port}` },
+      })
+      const status = await statusRes.json() as Record<string, unknown>
+      const probeKey = status['probeKey'] as string
+      // No served descriptor for this plugin: the preference is hidden, not
+      // rendered as a toggle that could never save.
+      expect(status['useMaximumContextWindow']).toBeUndefined()
+      // And hiding the toggle must never shrink the window: the resolved
+      // config still carries the `true` default, so the largest declared
+      // window (1M) stays in force.
+      expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(1_000_000)
+
+      // Attempt to toggle
+      const res = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/probe`, {
+        method: 'POST',
+        headers: {
+          host: `127.0.0.1:${server.port}`,
+          'content-type': 'application/json',
+          'x-workbuddy-probe-key': probeKey,
+        },
+        body: JSON.stringify({ action: 'set-maximum-context-window', enabled: false }),
+      })
+      const body = await res.json() as Record<string, unknown>
+      expect(body).toMatchObject({
+        state: 'failed',
+        reason: expect.stringContaining('no configurable settings entry'),
+      })
+
+      // The unrelated plugin was never written to
+      expect(forms.writes).toHaveLength(0)
+      expect(forms.stored('unrelated-plugin')).toEqual({ useMaximumContextWindow: true })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('keeps the default maximum window when the descriptor serves no stored value', async () => {
+    // Precondition, pinned so the regression this test guards explains
+    // itself: a `.volatile()` field resolves to a cosmokit container
+    // (`{ get() }`), not a plain boolean — re-spreading the raw config over
+    // the plugin's unwrapped state used to flip the catalog to 300K.
+    const resolved = resolveConfig({ name: 'x', callback() {}, Config: WorkBuddy.Config } as never, {}) as Record<string, unknown>
+    expect(typeof resolved.useMaximumContextWindow).toBe('object')
+    expect((resolved.useMaximumContextWindow as { get?: () => unknown }).get?.()).toBe(true)
+
+    root = await mkdtemp(join(tmpdir(), 'workbuddy-no-stored-value-'))
+    const aiFile = join(root, 'ai.info')
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
+    vi.stubEnv('DSH_HOME', root)
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
+    vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).startsWith('http://127.0.0.1')) return realFetch(url, init)
+      throw new Error('offline in tests')
+    }))
+
+    // The entry is served (volatile field ⇒ descriptor exists) but carries
+    // no stored preference yet: the document has never been written.
+    const forms = new ModernSettingsForms({
+      entries: [{ ns: 'dsh-workbuddy-connect', schema: WorkBuddy.Config, value: {} }],
+    })
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    ctx.provide('settings', forms as never)
+    await ctx.plugin(FakeWebServer)
+    await ctx.plugin(WorkBuddy, {})
+
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
+    })
+
+    const server = await serve(FakeWebServer.current!.routes)
+    try {
+      const statusRes = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/status`, {
+        headers: { host: `127.0.0.1:${server.port}` },
+      })
+      const status = await statusRes.json() as Record<string, unknown>
+      // The toggle renders (the entry is served and writable) and reports
+      // the `true` default; the window is the declared maximum.
+      expect(status['useMaximumContextWindow']).toBe(true)
+      const probeKey = status['probeKey'] as string
+      expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(1_000_000)
+
+      // A first-ever write lands and sticks.
+      const res = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/probe`, {
+        method: 'POST',
+        headers: {
+          host: `127.0.0.1:${server.port}`,
+          'content-type': 'application/json',
+          'x-workbuddy-probe-key': probeKey,
+        },
+        body: JSON.stringify({ action: 'set-maximum-context-window', enabled: false }),
+      })
+      expect(await res.json()).toEqual({ state: 'updated' })
+      expect(forms.stored('dsh-workbuddy-connect')).toMatchObject({ useMaximumContextWindow: false })
+      expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(300_000)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('writes only this plugin\'s entry when another served entry declares the same volatile field', async () => {
+    root = await mkdtemp(join(tmpdir(), 'workbuddy-same-field-'))
+    const aiFile = join(root, 'ai.info')
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
+    vi.stubEnv('DSH_HOME', root)
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
+    vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).startsWith('http://127.0.0.1')) return realFetch(url, init)
+      throw new Error('offline in tests')
+    }))
+
+    const forms = new ModernSettingsForms({
+      entries: [
+        { ns: 'dsh-workbuddy-connect', schema: WorkBuddy.Config, value: { useMaximumContextWindow: true } },
+        // Both entries are served and both declare the same volatile field;
+        // only the package-name entry may ever be written.
+        { ns: 'unrelated-plugin', schema: z.object({ useMaximumContextWindow: z.boolean().volatile() }), value: { useMaximumContextWindow: true } },
+      ],
+    })
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    ctx.provide('settings', forms as never)
+    await ctx.plugin(FakeWebServer)
+    await ctx.plugin(WorkBuddy, {})
+
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
+    })
+
+    const server = await serve(FakeWebServer.current!.routes)
+    try {
+      const statusRes = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/status`, {
+        headers: { host: `127.0.0.1:${server.port}` },
+      })
+      const status = await statusRes.json() as Record<string, unknown>
+      const probeKey = status['probeKey'] as string
+
+      const res = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/probe`, {
+        method: 'POST',
+        headers: {
+          host: `127.0.0.1:${server.port}`,
+          'content-type': 'application/json',
+          'x-workbuddy-probe-key': probeKey,
+        },
+        body: JSON.stringify({ action: 'set-maximum-context-window', enabled: false }),
+      })
+      expect(await res.json()).toEqual({ state: 'updated' })
+
+      expect(forms.writes.map(write => write.ns)).toEqual(['dsh-workbuddy-connect'])
+      expect(forms.stored('dsh-workbuddy-connect')).toMatchObject({ useMaximumContextWindow: false })
+      expect(forms.stored('unrelated-plugin')).toEqual({ useMaximumContextWindow: true })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('follows external edits announced through settings/document-updated', async () => {
+    root = await mkdtemp(join(tmpdir(), 'workbuddy-external-edit-'))
+    const aiFile = join(root, 'ai.info')
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
+    vi.stubEnv('DSH_HOME', root)
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
+    vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).startsWith('http://127.0.0.1')) return realFetch(url, init)
+      throw new Error('offline in tests')
+    }))
+
+    const ctx = new Context()
+    context = ctx
+    const forms = new ModernSettingsForms({
+      entries: [{ ns: 'dsh-workbuddy-connect', schema: WorkBuddy.Config, value: { useMaximumContextWindow: true } }],
+      emitter: ctx,
+    })
+    await ctx.plugin(LlmRuntime)
+    ctx.provide('settings', forms as never)
+    await ctx.plugin(FakeWebServer)
+    await ctx.plugin(WorkBuddy, {})
+
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
+    })
+    expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(1_000_000)
+
+    // An edit made outside the plugin's own card (a native config editor or
+    // the CLI) lands through the document-updated announcement alone.
+    await forms.update('dsh-workbuddy-connect', { useMaximumContextWindow: false })
+
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(300_000)
+    })
+    const server = await serve(FakeWebServer.current!.routes)
+    try {
+      const statusRes = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/status`, {
+        headers: { host: `127.0.0.1:${server.port}` },
+      })
+      const statusBody = await statusRes.json() as Record<string, unknown>
+      expect(statusBody['useMaximumContextWindow']).toBe(false)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it.each([2000, 5000, Infinity])('binds the real SettingsForms entry delayed by %i ms', async (delay) => {
+    root = await mkdtemp(join(tmpdir(), 'workbuddy-real-forms-boot-'))
+    const aiFile = join(root, 'ai.info')
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
+    vi.stubEnv('DSH_HOME', root)
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
+    vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).startsWith('http://127.0.0.1')) return realFetch(url, init)
+      throw new Error('offline in tests')
+    }))
+
+    // Real Cordis fibers and SettingsForms; only the config editor is a fixture.
+    // Delay publication independently of the plugin fiber becoming active.
+    let availableAt = Date.now() + delay
+    const describeStates: Array<number | undefined> = []
+    let pluginFiber: { state?: number; config: Record<string, unknown>; entry?: { id: string; options: { id: string } } } | undefined
+    let saved: Record<string, unknown> = {}
+    let failWrite = false
+    let writes = 0
+    const configuration = () => {
+      describeStates.push(pluginFiber?.state)
+      if (pluginFiber === undefined || Date.now() < availableAt) return []
+      return [{
+        entry: { fiber: pluginFiber, options: { id: 'llm-workbuddy', config: saved } },
+        inherited: {},
+        override: saved,
+      }]
+    }
+    const configEditor = {
+      documentPath: join(root, 'profile-patch.yaml'),
+      configuration,
+      entries: () => configuration().map(row => row.entry),
+      edit: async (_entry: unknown, fn: (raw: unknown, inherited: unknown) => unknown) => {
+        const next = fn(saved, {}) as Record<string, unknown>
+        if (failWrite) throw new Error('disk is read-only')
+        await writeFile(join(root!, 'profile-patch.yaml'), JSON.stringify(next))
+        saved = next
+        writes += 1
+        // Model the editor applying resolved Config after a successful save.
+        Object.assign(pluginFiber!.config, resolveConfig({ name: 'fixture', callback() {}, Config: WorkBuddy.Config } as never, saved))
+      },
+    }
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    ctx.provide('loader', { await: () => Promise.resolve() } as never)
+    ctx.provide('configEditor', configEditor as never)
+    ctx.provide('profileContext', { home: join(root, 'no-settings-yaml') } as never)
+    await ctx.plugin({ name: 'real-settings-forms', apply: (c: Context) => { new SettingsForms(c) } })
+    await ctx.plugin(FakeWebServer)
+
+    const wrapped = ctx.plugin(WorkBuddy, {})
+    pluginFiber = Object.getPrototypeOf(wrapped) as typeof pluginFiber
+    pluginFiber!.entry = { id: 'include:llm-workbuddy', options: { id: 'llm-workbuddy' } }
+    await wrapped
+    await new Promise(resolve => { setTimeout(resolve, 0) })
+
+    const server = await serve(FakeWebServer.current!.routes)
+    try {
+      const statusRes = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/status`, {
+        headers: { host: `127.0.0.1:${server.port}` },
+      })
+      const status = await statusRes.json() as Record<string, unknown>
+      expect(status['useMaximumContextWindow']).toBeUndefined()
+      expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(1_000_000)
+      if (delay === Infinity) {
+        vi.useFakeTimers()
+        await vi.advanceTimersByTimeAsync(20_000)
+        const exhaustedReads = describeStates.length
+        await vi.advanceTimersByTimeAsync(60_000)
+        expect(describeStates.length).toBe(exhaustedReads)
+        // An event after the finite retry budget still recovers binding.
+        availableAt = 0
+        ctx.emit('settings/document-updated', 'unrelated-plugin' as SettingsNamespace, 0)
+        vi.useRealTimers()
+      }
+      await vi.waitFor(async () => {
+        const response = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/status`)
+        expect((await response.json() as Record<string, unknown>)['useMaximumContextWindow']).toBe(true)
+      }, { timeout: 8000, interval: 100 })
+      expect(writes).toBe(0)
+      vi.useFakeTimers()
+      const boundReads = describeStates.length
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(describeStates.length).toBe(boundReads)
+      vi.useRealTimers()
+      const toggle = async (enabled: boolean) => {
+        const response = await fetch(`http://127.0.0.1:${server.port}/plugins/dsh-workbuddy-connect/ai/probe`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-workbuddy-probe-key': status['probeKey'] as string },
+          body: JSON.stringify({ action: 'set-maximum-context-window', enabled }),
+        })
+        return response.json()
+      }
+      expect(await toggle(false)).toEqual({ state: 'updated' })
+      expect(JSON.parse(readFileSync(join(root!, 'profile-patch.yaml'), 'utf8'))).toEqual({ useMaximumContextWindow: false })
+      expect(writes).toBe(1)
+      expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(300_000)
+      failWrite = true
+      expect(await toggle(true)).toMatchObject({ state: 'failed', reason: 'disk is read-only' })
+      expect(saved).toEqual({ useMaximumContextWindow: false })
+      expect(writes).toBe(1)
+      expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(300_000)
+      // Dispose with a retry pending after the descriptor disappears.
+      vi.useFakeTimers()
+      availableAt = Infinity
+      ctx.emit('settings/document-updated', 'llm-workbuddy' as SettingsNamespace, 1)
+      await ctx.fiber.dispose()
+      context = undefined
+      const disposedReads = describeStates.length
+      await vi.advanceTimersByTimeAsync(60_000)
+      ctx.emit('settings/document-updated', 'llm-workbuddy' as SettingsNamespace, 2)
+      expect(describeStates.length).toBe(disposedReads)
+      vi.useRealTimers()
+      expect(describeStates.length).toBeGreaterThan(0)
+      // Diagnostic pin of the race precondition: at least one describe ran
+      // while the plugin fiber was not yet active, and the retry recovered.
+      if (!describeStates.includes(2)) throw new Error('expected at least one describe after fiber activation')
+    } finally {
+      await server.close()
+    }
+  }, 12000)
+})
+
+describe('modern settings entry id resolution', () => {
+  const rows = (...ns: string[]): { ns: string }[] => ns.map(id => ({ ns: id }))
+
+  it('prefers the loader entry id the plugin fiber carries, custom ids included', () => {
+    expect(resolveModernSettingsEntryId(rows('some-alias', 'unrelated-plugin'), 'some-alias')).toBe('some-alias')
+  })
+
+  it('falls back to the package-name literal only when it is served', () => {
+    expect(resolveModernSettingsEntryId(rows('unrelated-plugin'), undefined)).toBeUndefined()
+    expect(resolveModernSettingsEntryId(rows('dsh-workbuddy-connect'), undefined)).toBe('dsh-workbuddy-connect')
+  })
+
+  it('answers undefined when the own id is not served, never adopting a neighbour', () => {
+    expect(resolveModernSettingsEntryId(rows('dsh-workbuddy-connect'), 'some-alias')).toBeUndefined()
+    expect(resolveModernSettingsEntryId(rows('unrelated-plugin'), 'some-alias')).toBeUndefined()
   })
 })

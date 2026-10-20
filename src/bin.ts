@@ -7,6 +7,7 @@ import { WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
+import { versionDrift, versionDriftWarning } from './version-resolve.ts'
 import { isHeartbeatProcessAlive, readHostHeartbeat, workbuddyHostHeartbeatPath } from './host-heartbeat.ts'
 import { atRestKeyProviderFor } from './desktop-credential-protection.ts'
 import { CN_VARIANT, variantFor, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
@@ -90,6 +91,8 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
   const decryptionNote = status.state === 'signed-out' && desktopFormat === 'encrypted' && status.reason !== undefined
     ? `Encrypted desktop credential could not be used: ${status.reason}`
     : undefined
+  const drift = versionDrift()
+  const driftWarning = versionDriftWarning(drift)
   const report = {
     schemaVersion: JSON_SCHEMA_VERSION,
     package: 'dsh-workbuddy-connect',
@@ -122,11 +125,13 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
     },
     signIn: status.state,
     fallbackModels: fallbackCount(variant),
+    ...drift === undefined ? {} : { manifestVersion: drift.manifest },
     hints: [
       ...decryptionNote !== undefined ? [decryptionNote]
         : status.state === 'signed-out' ? [`Sign in once in the ${variant.appName} desktop app or the CodeBuddy CLI, then run status again.`] : [],
       ...desktopPresent ? [] : [`No ${variant.appName} desktop auth file (or CodeBuddy CLI auth file) at the expected path; set ${variant.env} if it lives elsewhere.`],
       ...hostAlive ? [] : ['Host bundle not running in this DSH profile (or the process exited). The browser card and provider are unavailable until DSH starts the plugin.'],
+      ...driftWarning === undefined ? [] : [driftWarning],
     ],
   }
   if (jsonOutput) {
@@ -138,6 +143,7 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
       `Host bundle: ${hostAlive ? `running (pid ${heartbeat!.pid})` : heartbeat !== undefined ? 'stale heartbeat (process exited)' : 'not started'}`,
       `Sign-in state: ${report.signIn}`,
       `Static fallback models: ${report.fallbackModels}`,
+      ...drift === undefined ? [] : [`Manifest version: ${drift.manifest} (loaded build is ${drift.build})`],
       ...appVersion === undefined ? [] : [`Catalog User-Agent version: ${appVersion.version} (${appVersion.source})`],
       ...report.hints.map(hint => `Hint: ${hint}`),
       '',

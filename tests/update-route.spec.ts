@@ -14,9 +14,10 @@ afterEach(async () => {
   await Promise.all(CLEANUP.splice(0).map(clean => clean()))
 })
 
-async function startServer(): Promise<number> {
+async function startServer(manifestVersion?: string): Promise<number> {
   const server = createServer(workBuddyUpdateHandler({
     currentVersion: '0.6.3',
+    ...manifestVersion === undefined ? {} : { manifestVersion },
     fetchImpl: async (input: string) => {
       if (input === WORKBUDDY_UPDATE_NPM_METADATA_URL) {
         return new Response(JSON.stringify({ 'dist-tags': { latest: '0.6.3' } }), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -54,6 +55,25 @@ describe('the update route', () => {
   it('answers a loopback GET with the check result', async () => {
     const port = await startServer()
     const { status, body } = await requestOnce(port, { headers: { host: '127.0.0.1:PORT'.replace('PORT', String(port)) } })
+    expect(status).toBe(200)
+    expect(JSON.parse(body)).toEqual({ status: 'up-to-date', currentVersion: '0.6.3', latestVersion: '0.6.3' })
+  })
+
+  it('forwards the manifest version when the loaded build is behind it', async () => {
+    const port = await startServer('0.7.0')
+    const { status, body } = await requestOnce(port, { headers: { host: `127.0.0.1:${String(port)}` } })
+    expect(status).toBe(200)
+    expect(JSON.parse(body)).toEqual({
+      status: 'up-to-date',
+      currentVersion: '0.6.3',
+      latestVersion: '0.6.3',
+      manifestVersion: '0.7.0',
+    })
+  })
+
+  it('omits the manifest version when it matches the build', async () => {
+    const port = await startServer('0.6.3')
+    const { status, body } = await requestOnce(port, { headers: { host: `127.0.0.1:${String(port)}` } })
     expect(status).toBe(200)
     expect(JSON.parse(body)).toEqual({ status: 'up-to-date', currentVersion: '0.6.3', latestVersion: '0.6.3' })
   })

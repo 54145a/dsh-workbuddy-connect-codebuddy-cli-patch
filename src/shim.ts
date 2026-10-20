@@ -213,11 +213,41 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       return
     }
 
+    // The client's disconnect must reach the upstream request, or "Stop" only
+    // stops the stream being *read* here: the upstream keeps generating and
+    // billing for a reply nobody will see.
+    //
+    // The listener has to go on `res`, not `req`. `req`'s `close` fires when
+    // the *request body* is finished, and by this point `readBody` has already
+    // consumed it — so attaching to `req` after the await installs a listener
+    // on an event that has already fired, and the abort never happens.
+    // `res`'s `close` fires when the response can no longer be written. On a
+    // normal completion the stream has already ended the response
+    // (`writableEnded`), so only a close *before* that means the peer hung up;
+    // aborting on the normal path would cancel a request that already
+    // succeeded. The `req` listener covers the early window, where a peer
+    // disconnects mid-body and `readBody` rejects before any response exists;
+    // abort() is idempotent, so both paths may fire.
+    const controller = new AbortController()
+    const abort = (): void => controller.abort()
+    // Two independent guards keep the normal path from aborting itself, and
+    // both are kept on purpose: `finish` detaches the listener before the
+    // trailing `close`, and `writableEnded` covers the ordering where `close`
+    // arrives first. Either alone is sufficient today (removing just the
+    // `writableEnded` check leaves the suite green), which is exactly why the
+    // pair is documented rather than trimmed — the guarantee must not depend
+    // on an event order Node has not promised.
+    const abortIfUnfinished = (): void => {
+      if (!res.writableEnded) controller.abort()
+    }
+    req.once('aborted', abort)
+    res.on('close', abortIfUnfinished)
+    // Drop the response listener once the pipe is done either way, so a
+    // long-lived keep-alive socket does not accumulate them.
+    res.once('finish', () => res.off('close', abortIfUnfinished))
+
     const raw = (await readBody(req)).toString('utf8')
     const prepared = prepareChatBody(raw)
-
-    const controller = new AbortController()
-    req.on('close', () => controller.abort())
     const result = await client.chatStream(credential, prepared, controller.signal)
 
     if (!result.ok) {

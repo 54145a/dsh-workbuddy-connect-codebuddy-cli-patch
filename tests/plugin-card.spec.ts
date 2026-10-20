@@ -298,6 +298,74 @@ describe('WorkBuddy plugin card', () => {
     expect(rendered).toContain(en.cycleResetAt.split('{time}')[0]!)
   })
 
+  it('combines same-name packages, including spent allowances, into one details row', async () => {
+    status()
+    statusBody.credits = {
+      total: 250,
+      accounts: [
+        { packageName: 'daily', remain: 100, size: 100, endTimeMs: 1000 },
+        { packageName: 'bonus', remain: 100, size: 200 },
+        { packageName: 'daily', remain: 50, size: 100, endTimeMs: 2000 },
+        { packageName: 'daily', remain: 0, size: 100 },
+      ],
+    }
+    await mount()
+    await press(en.tabDetails)
+    const bars = view!.root.findAll(node => node.props.role === 'progressbar')
+    expect(bars).toHaveLength(2)
+    expect(bars.map(bar => bar.props['aria-label'])).toEqual(['daily', 'bonus'])
+    expect(bars[0]!.props['aria-valuenow']).toBe(50)
+    expect(JSON.stringify(view!.toJSON())).toContain('150 / 300')
+    expect(statusBody.credits).toMatchObject({
+      accounts: [
+        { remain: 100, size: 100 },
+        { remain: 100, size: 200 },
+        { remain: 50, size: 100 },
+        { remain: 0, size: 100 },
+      ],
+    })
+  })
+
+  it('keeps a combined allowance unknown when one same-name package has no size', async () => {
+    status()
+    statusBody.credits = {
+      total: 150,
+      accounts: [
+        { packageName: 'bonus', remain: 100, size: 100 },
+        { packageName: 'bonus', remain: 50, size: 0 },
+      ],
+    }
+    await mount()
+    await press(en.tabDetails)
+    const bars = view!.root.findAll(node => node.props.role === 'progressbar')
+    expect(bars).toHaveLength(1)
+    expect(bars[0]!.props['aria-valuenow']).toBeUndefined()
+  })
+
+  it.each([false, true])('renders same-name mixed finite/unlimited packages as unlimited (unlimited first: %s)', async (unlimitedFirst) => {
+    status()
+    const accounts = [
+      { packageName: 'bonus', remain: 50, size: 100 },
+      { packageName: 'bonus', remain: 0, size: 0, unlimited: true as const },
+    ]
+    statusBody.credits = { total: 50, accounts: unlimitedFirst ? [...accounts].reverse() : accounts }
+    await mount()
+    await press(en.tabDetails)
+    const bars = view!.root.findAll(node => node.props.role === 'progressbar')
+    expect(bars).toHaveLength(1)
+    expect(bars[0]!.props['aria-label']).toBe('bonus')
+    expect(bars[0]!.props['aria-valuetext']).toBe(en.unlimitedQuota)
+    expect(bars[0]!.props['aria-valuenow']).toBeUndefined()
+    expect(bars[0]!.props['aria-valuemin']).toBeUndefined()
+    expect(bars[0]!.props['aria-valuemax']).toBeUndefined()
+    expect(bars[0]!.children).toHaveLength(0)
+    expect(JSON.stringify(view!.toJSON())).not.toContain('50 / 100')
+    expect(accounts).toEqual([
+      { packageName: 'bonus', remain: 50, size: 100 },
+      { packageName: 'bonus', remain: 0, size: 0, unlimited: true },
+    ])
+  })
+
   it('renders enterprise quota and handles 0 remaining without hiding row', async () => {
     status()
     statusBody.credits = {

@@ -462,6 +462,28 @@ describe('issues #105/#106/#107: Windows registry step budget', () => {
   })
 })
 
+describe('issues #105/#106/#107: Windows tool paths are Windows paths on every host', () => {
+  it('builds reg.exe and powershell.exe with backslashes even off Windows', async () => {
+    // These two strings are never touched by `fs` here: they are handed to
+    // `execFile`, and on a POSIX host the host `join` would emit
+    // `C:\Windows/System32/reg.exe`. The suite also runs on macOS and Linux, so
+    // this asserts the separators production must emit regardless of host.
+    vi.stubEnv('SystemRoot', 'C:\\Windows')
+    const spawned: string[] = []
+    registryStdout(Buffer.concat([GBK_CJK]), {
+      fallback: { stdout: '[]' },
+      onSpawn: binary => { spawned.push(binary) },
+    })
+    await workBuddyWindowsDiscoveryTools().queryUninstallRoot('HKCU\\Uninstall', new AbortController().signal)
+    const reg = spawned.find(binary => /reg\.exe$/u.test(binary))
+    const fallback = spawned.find(binary => /powershell/iu.test(binary))
+    expect(reg).toBe('C:\\Windows\\System32\\reg.exe')
+    expect(fallback).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+    // No POSIX separator may survive inside a Windows tool path.
+    for (const binary of spawned) expect(binary).not.toMatch(/\//u)
+  })
+})
+
 describe('issues #105/#106/#107: roots are guarded before they reach a command line', () => {
   // `powershell.exe` re-parses everything after -Command as code, so a root
   // is only allowed onto that command line when it is provably inert in that

@@ -19,6 +19,8 @@ export { WORKBUDDY_UPDATE_PATH } from './status-paths.ts'
 /** Constructor dependencies. */
 export interface WorkBuddyUpdateRouteOptions {
   currentVersion: string
+  /** Manifest version when it differs from the loaded build; forwarded to the browser. */
+  manifestVersion?: string
   fetchImpl?: WorkBuddyUpdateFetch
   timeoutMs?: number
 }
@@ -62,7 +64,9 @@ export function workBuddyUpdateHandler(options: WorkBuddyUpdateRouteOptions): (r
       // a well-formed document rather than an empty 500.
       result = { status: 'unavailable', currentVersion: options.currentVersion, reason: 'registry-unavailable' }
     }
-    json(res, 200, result)
+    json(res, 200, options.manifestVersion === undefined || options.manifestVersion === options.currentVersion
+      ? result
+      : { ...result, manifestVersion: options.manifestVersion })
   }
 }
 
